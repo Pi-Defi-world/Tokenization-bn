@@ -6,7 +6,6 @@
 
 # environment
 .env
-.env.*
 
 # build output
 /dist
