@@ -36,5 +36,6 @@ pids
 # package manager lock files
 package-lock.json
 yarn.lock
-
-
+usage.ts
+/services/analytics.service.ts
+/models/PoolStat.ts

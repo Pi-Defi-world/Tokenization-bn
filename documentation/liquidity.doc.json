@@ -1,0 +1,131 @@
+{
+  "tags": [
+    {
+      "name": "Liquidity",
+      "description": "Liquidity pool creation, deposit, withdraw, and rewards"
+    }
+  ],
+  "paths": {
+    "/v1/liquidity-pools": {
+      "get": {
+        "summary": "List all liquidity pools",
+        "tags": ["Liquidity"],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "default": 50 },
+            "required": false,
+            "description": "Maximum number of pools to return"
+          }
+        ],
+        "responses": {
+          "200": { "description": "Fetched all pools successfully" }
+        }
+      },
+      "post": {
+        "summary": "Create a new liquidity pool",
+        "tags": ["Liquidity"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "userSecret": { "type": "string" },
+                  "tokenA": {
+                    "type": "object",
+                    "properties": { "code": { "type": "string" }, "issuer": { "type": "string" } }
+                  },
+                  "tokenB": {
+                    "type": "object",
+                    "properties": { "code": { "type": "string" }, "issuer": { "type": "string" } }
+                  },
+                  "amountA": { "type": "string" },
+                  "amountB": { "type": "string" }
+                },
+                "required": ["userSecret", "tokenA", "tokenB", "amountA", "amountB"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Liquidity pool created successfully" }
+        }
+      }
+    },
+    "/v1/liquidity-pools/deposit": {
+      "post": {
+        "summary": "Deposit liquidity into pool",
+        "tags": ["Liquidity"],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "userSecret": { "type": "string" },
+                  "poolId": { "type": "string" },
+                  "amountA": { "type": "string" },
+                  "amountB": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Liquidity deposited successfully" }
+        }
+      }
+    },
+    "/v1/liquidity-pools/withdraw": {
+      "post": {
+        "summary": "Withdraw liquidity from pool",
+        "tags": ["Liquidity"],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "userSecret": { "type": "string" },
+                  "poolId": { "type": "string" },
+                  "shareAmount": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Liquidity withdrawn successfully" }
+        }
+      }
+    },
+    "/v1/liquidity-pools/rewards": {
+      "get": {
+        "summary": "Get rewards for liquidity provider",
+        "tags": ["Liquidity"],
+        "parameters": [
+          { "name": "userPublicKey", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "poolId", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Fetched liquidity pool rewards" }
+        }
+      }
+    },
+    "/v1/liquidity-pools/user-pools": {
+      "get": {
+        "summary": "Get all pools a user participates in",
+        "tags": ["Liquidity"],
+        "parameters": [
+          { "name": "userPublicKey", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Fetched user's liquidity pools" }
+        }
+      }
+    }
+  }
+}

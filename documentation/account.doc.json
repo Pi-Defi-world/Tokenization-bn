@@ -1,0 +1,119 @@
+{
+  "tags": [
+    { "name": "Account", "description": "Account import, balances and transactions" }
+  ],
+  "paths": {
+    "/v1/account/import": {
+      "post": {
+        "tags": ["Account"],
+        "summary": "Import account from mnemonic or secret",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "mnemonic": { "type": "string" },
+                  "secret": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Imported successfully" }
+        }
+      }
+    },
+    "/v1/account/balance/{publicKey}": {
+      "get": {
+        "tags": ["Account"],
+        "summary": "Get balances by publicKey (path)",
+        "parameters": [
+          { "name": "publicKey", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Balances fetched",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "balances": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "asset": { "type": "string" },
+                          "balance": { "type": "string" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Missing or invalid publicKey parameter" },
+          "404": { "description": "Account not found" },
+          "500": { "description": "Failed to fetch balances" }
+        }
+      }
+    },
+    "/v1/account/operations/{publicKey}": {
+      "get": {
+        "tags": ["Account"],
+        "summary": "Get account operations by publicKey (param) with pagination",
+        "description": "Returns formatted operations (payments, trustlines, offers, etc.) for an account",
+        "parameters": [
+          { "name": "publicKey", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 20 } },
+          { "name": "cursor", "in": "query", "schema": { "type": "string" } },
+          { "name": "order", "in": "query", "schema": { "type": "string", "enum": ["asc", "desc"], "default": "desc" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Operations fetched successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string" },
+                          "createdAt": { "type": "string" },
+                          "type": { "type": "string" },
+                          "action": { "type": "string" },
+                          "source": { "type": "string" },
+                          "transactionHash": { "type": "string" }
+                        }
+                      }
+                    },
+                    "pagination": {
+                      "type": "object",
+                      "properties": {
+                        "limit": { "type": "integer" },
+                        "nextCursor": { "type": "string", "nullable": true },
+                        "hasMore": { "type": "boolean" },
+                        "order": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Missing publicKey parameter" },
+          "500": { "description": "Failed to fetch operations" }
+        }
+      }
+    }
+  }
+}
+

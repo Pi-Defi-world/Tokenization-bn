@@ -68,6 +68,7 @@ class TokenService {
       );
       const issuerAccount = await server.loadAccount(issuer.publicKey());
       const fee = (await server.fetchBaseFee()).toString();
+      
 
       const tx = new StellarSdk.TransactionBuilder(issuerAccount, {
         fee,
@@ -172,6 +173,62 @@ class TokenService {
       return tokens;
     } catch (err: any) {
       logger.error("❌ Error in getTokens:", err);
+      throw err;
+    }
+  }
+
+  async burnToken({
+    holderSecret,
+    issuer,
+    assetCode,
+    amount,
+  }: {
+    holderSecret: string;
+    assetCode: string;
+    issuer: string;
+    amount: string;
+  }) {
+    try {
+      logger.info(`🔹 Burning ${amount} ${assetCode} tokens`);
+
+      const holderKeypair = StellarSdk.Keypair.fromSecret(holderSecret);
+      const holderPublic = holderKeypair.publicKey();
+      const issuerAccount = await server.loadAccount(holderPublic);
+
+      const asset = new StellarSdk.Asset(assetCode, issuer);
+
+      await this.establishTrustline(
+        holderSecret,
+        assetCode,
+        issuer
+      );
+
+      const burnAddress ='GDX3VYTSBJTDKIKBGDBA7E226GIZNGIE3KRFED6LFWL6EQJ4SNZE5PBW'
+
+      const fee = (await server.fetchBaseFee()).toString();
+
+      const tx = new StellarSdk.TransactionBuilder(issuerAccount, {
+        fee,
+        networkPassphrase: env.NETWORK,
+      })
+        .addOperation(
+          StellarSdk.Operation.payment({
+            destination: burnAddress,
+            asset,
+            amount,
+          })
+        )
+        .setTimeout(30)
+        .build();
+
+      tx.sign(holderKeypair);
+
+      const result = await server.submitTransaction(tx);
+
+      logger.success(`✅ Burned ${amount} ${assetCode}. Transaction hash: ${result.hash}`);
+      return result;
+    } catch (err: any) {
+      logger.error("❌ Error burning token:", err);
       throw err;
     }
   }

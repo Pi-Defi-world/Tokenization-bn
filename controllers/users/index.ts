@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { usersService } from '../../services/users.service';
+import { logger } from '../../utils/logger';
 
 
 export const handleSignInUser = async (req: Request, res: Response): Promise<any> => {
@@ -12,6 +13,7 @@ export const handleSignInUser = async (req: Request, res: Response): Promise<any
             token,
         });
     } catch (error) {
+        console.log(error)
         return res.status(500).json({
             message: "Internal server error"
         });

@@ -104,3 +104,28 @@ export const mint = async (req: Request, res: Response) => {
     res.status(400).json({ success: false, message: err.message });
   }
 };
+
+export const burnTokens = async (req: Request, res: Response) => {
+  try {
+    const { assetCode, amount, holderSecret,issuer } = req.body;
+
+    if (!assetCode) {
+      return res.status(400).json({ success: false, message: "assetCode is required" });
+    }
+    if (!amount) {
+      return res.status(400).json({ success: false, message: "amount is required" });
+    }
+    if (!holderSecret) {
+      return res.status(400).json({ success: false, message: "holderSecret is required" });
+    }
+
+    const result = await tokenService.burnToken({ assetCode, amount, holderSecret,issuer });
+    return res.status(200).json({
+      message: 'Token burned successfully on Stellar',
+      txHash: result.hash,
+    });
+  } catch (error: any) {
+    console.error('Error burning token:', error.response?.data?.extras?.result_codes);
+    return res.status(500).json({ error: error.response?.data?.extras?.result_codes});
+  }
+};

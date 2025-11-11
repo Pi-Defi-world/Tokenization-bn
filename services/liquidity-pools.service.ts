@@ -174,9 +174,14 @@ export class PoolService {
       });
 
       logger.info(`🔹 Next page function available via pools.next()`);
+
+      const lastRecord = pools.records[pools.records.length - 1];
+      // Horizon responses typically expose paging_token on each record
+      const nextCursor = lastRecord?.paging_token as string | undefined;
+
       return {
         records: pools.records,
-        next: pools.next
+        nextCursor
       };
     } catch (err: any) {
       logger.error('❌ Error fetching liquidity pools:', JSON.stringify(err.response?.data || err, null, 2));
@@ -198,4 +203,171 @@ export class PoolService {
       throw err;
     }
   }
+  public async addLiquidity(
+    userSecret: string,
+    poolId: string,
+    amountA: string,
+    amountB: string
+  ) {
+    try {
+      const user = StellarSdk.Keypair.fromSecret(userSecret);
+      const account = await server.loadAccount(user.publicKey());
+      const pool = await this.getLiquidityPoolById(poolId);
+
+      const [resA, resB] = pool.reserves;
+      if (parseFloat(pool.total_shares) === 0) {
+        logger.warn(`⚠️ Pool ${poolId} is empty. Reinitializing liquidity...`);
+        return await this.createLiquidityPool(
+          userSecret,
+          { code: resA.asset.split(':')[0], issuer: resA.asset.split(':')[1] },
+          { code: resB.asset.split(':')[0], issuer: resB.asset.split(':')[1] },
+          amountA,
+          amountB
+        );
+      }
+      const exactPrice = parseFloat(resA.amount) / parseFloat(resB.amount);
+      const minPrice = (exactPrice * 0.9).toFixed(7);
+      const maxPrice = (exactPrice * 1.1).toFixed(7);
+
+      const baseFee = await server.fetchBaseFee();
+
+      const tx = new StellarSdk.TransactionBuilder(account, {
+        fee: baseFee.toString(),
+        networkPassphrase: env.NETWORK,
+      })
+        .addOperation(
+          StellarSdk.Operation.liquidityPoolDeposit({
+            liquidityPoolId: poolId,
+            maxAmountA: amountA,
+            maxAmountB: amountB,
+            minPrice,
+            maxPrice,
+          })
+        )
+        .setTimeout(60)
+        .build();
+
+      tx.sign(user);
+      const result = await server.submitTransaction(tx);
+      logger.success(`✅ Added liquidity successfully`);
+      return { hash: result.hash };
+    } catch (err: any) {
+      logger.error('❌ Error adding liquidity:', JSON.stringify(err.response?.data || err, null, 2));
+      throw err;
+    }
+  }
+
+  public async removeLiquidity(userSecret: string, poolId: string, shareAmount: string) {
+    try {
+      const user = StellarSdk.Keypair.fromSecret(userSecret);
+      const account = await server.loadAccount(user.publicKey());
+      const pool = await this.getLiquidityPoolById(poolId);
+
+      const [resA, resB] = pool.reserves;
+      const shareRatio = parseFloat(shareAmount) / parseFloat(pool.total_shares);
+
+      
+      const minAmountA = (parseFloat(resA.amount) * shareRatio * 0.99).toFixed(7);
+      const minAmountB = (parseFloat(resB.amount) * shareRatio * 0.99).toFixed(7);
+
+      const baseFee = await server.fetchBaseFee();
+
+      const tx = new StellarSdk.TransactionBuilder(account, {
+        fee: baseFee.toString(),
+        networkPassphrase: env.NETWORK,
+      })
+        .addOperation(
+          StellarSdk.Operation.liquidityPoolWithdraw({
+            liquidityPoolId: poolId,
+            amount: shareAmount,
+            minAmountA,
+            minAmountB,
+          })
+        )
+        .setTimeout(60)
+        .build();
+
+      tx.sign(user);
+      const result = await server.submitTransaction(tx);
+      logger.success(`💧 Liquidity withdrawn successfully`);
+      return { hash: result.hash };
+    } catch (err: any) {
+      logger.error('❌ Error removing liquidity:', JSON.stringify(err.response?.data || err, null, 2));
+      throw err;
+    }
+  }
+
+  public async getPoolRewards(userPublicKey: string, poolId: string) {
+    try {
+      // Fetch pool and user account info
+      const pool = await this.getLiquidityPoolById(poolId);
+      const userAccount = await server.loadAccount(userPublicKey);
+  
+      // Find user's LP balance (shares)
+      const lpBalance = userAccount.balances.find(
+        (b: any) => b.liquidity_pool_id === poolId
+      );
+  
+      if (!lpBalance) {
+        throw new Error(`User has no shares in liquidity pool ${poolId}`);
+      }
+  
+      const totalShares = parseFloat(pool.total_shares);
+      const userShares = parseFloat(lpBalance.balance);
+      const userPercentage = userShares / totalShares;
+  
+      // Calculate proportional rewards
+      const rewards = pool.reserves.map((res: any) => ({
+        asset: res.asset,
+        earnedFees: (parseFloat(res.amount) * userPercentage).toFixed(7),
+      }));
+  
+      logger.info(`💰 Rewards calculated for ${userPublicKey}`);
+      return { poolId, userShares, totalShares, userPercentage, rewards };
+    } catch (err: any) {
+      logger.error('❌ Error fetching pool rewards:', JSON.stringify(err.response?.data || err, null, 2));
+      throw err;
+    }
+  }
+
+  public async getUserLiquidityPools(userPublicKey: string) {
+    try {
+      logger.info(`🔹 Fetching liquidity pools for user: ${userPublicKey}`);
+  
+      const account = await server.loadAccount(userPublicKey);
+
+      const lpBalances = account.balances.filter(
+        (b: any) => b.liquidity_pool_id
+      );
+  
+      if (lpBalances.length === 0) {
+        logger.info(`ℹ️ User has no liquidity pool shares`);
+        return [];
+      }
+      const userPools = [];
+      for (const lp of lpBalances) {
+        const poolId = lp.liquidity_pool_id;
+        try {
+          const pool = await this.getLiquidityPoolById(poolId);
+          userPools.push({
+            poolId,
+            userShare: lp.balance,
+            totalShares: pool.total_shares,
+            assets: pool.reserves.map((r: any) => r.asset),
+            reserves: pool.reserves.map((r: any) => `${r.asset}: ${r.amount}`),
+            fee: `${pool.fee_bp / 100}%`,
+          });
+        } catch (e) {
+          logger.warn(`⚠️ Unable to fetch pool ${poolId}`);
+        }
+      }
+  
+      logger.success(`✅ Found ${userPools.length} user liquidity pools`);
+      return userPools;
+    } catch (err: any) {
+      logger.error(`❌ Error fetching user liquidity pools:`, JSON.stringify(err.response?.data || err, null, 2));
+      throw err;
+    }
+  }
+ 
 }

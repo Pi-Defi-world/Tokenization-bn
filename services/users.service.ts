@@ -13,9 +13,11 @@ interface IAuthResponse {
 class UsersService {
   async signInUser(authResult: IAuthResult): Promise<IAuthResponse> {
     try {
-      await platformAPIClient.get("/v2/me", {
+     const dd=  await platformAPIClient.get("/v2/me", {
         headers: { Authorization: `Bearer ${authResult.accessToken}` },
       });
+
+      console.log(dd)
 
     } catch (error) {
       throw new Error("Invalid access token");
