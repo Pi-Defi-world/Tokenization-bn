@@ -1,0 +1,135 @@
+{
+    "tags": [
+      {
+        "name": "Trade",
+        "description": "Endpoints for creating, buying, and cancelling trade offers on Stellar DEX."
+      }
+    ],
+    "components": {
+      "securitySchemes": {
+        "bearerAuth": {
+          "type": "http",
+          "scheme": "bearer",
+          "bearerFormat": "JWT",
+          "description": "Enter your JWT access token to authorize requests"
+        }
+      }
+    },
+    "paths": {
+      "/v1/trade/sell": {
+        "post": {
+          "tags": ["Trade"],
+          "summary": "Create a sell offer",
+          "description": "Places a sell offer on Stellar DEX for a given asset pair at a specified price.",
+          "security": [{ "bearerAuth": [] }],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "example": {
+                  "userSecret": "SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+                  "selling": "WPI:GBZQXXXXXX1234",
+                  "buying": "ZYRAPAY:GDFAAXXXXX1234",
+                  "amount": "100",
+                  "price": "2.5"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Sell offer created successfully",
+              "content": {
+                "application/json": {
+                  "example": {
+                    "success": true,
+                    "result": {
+                      "hash": "c3a9c7f1...",
+                      "ledger": 112347,
+                      "offerId": "584320948"
+                    }
+                  }
+                }
+              }
+            },
+            "400": { "description": "Invalid offer data" }
+          }
+        }
+      },
+      "/v1/trade/buy": {
+        "post": {
+          "tags": ["Trade"],
+          "summary": "Create a buy offer",
+          "description": "Places a buy offer on Stellar DEX to purchase one asset using another at a specified price.",
+          "security": [{ "bearerAuth": [] }],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "example": {
+                  "userSecret": "SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+                  "selling": "native",
+                  "buying": "ZYRAPAY:GDFAAXXXXX1234",
+                  "buyAmount": "50",
+                  "price": "0.75"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Buy offer created successfully",
+              "content": {
+                "application/json": {
+                  "example": {
+                    "success": true,
+                    "result": {
+                      "hash": "adf73491...",
+                      "offerId": "584320951"
+                    }
+                  }
+                }
+              }
+            },
+            "400": { "description": "Invalid offer data" }
+          }
+        }
+      },
+      "/v1/trade/cancel": {
+        "post": {
+          "tags": ["Trade"],
+          "summary": "Cancel a trade offer",
+          "description": "Cancels an active offer by its offer ID on the Stellar network.",
+          "security": [{ "bearerAuth": [] }],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "example": {
+                  "userSecret": "SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+                  "selling": "WPI:GBZQXXXXXX1234",
+                  "buying": "ZYRAPAY:GDFAAXXXXX1234",
+                  "offerId": "584320948"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Offer cancelled successfully",
+              "content": {
+                "application/json": {
+                  "example": {
+                    "success": true,
+                    "result": { "hash": "7acdf289..." }
+                  }
+                }
+              }
+            },
+            "404": { "description": "Offer not found" }
+          }
+        }
+      }
+    }
+  }
+  

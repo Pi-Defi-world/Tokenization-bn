@@ -1,0 +1,173 @@
+{
+    "tags": [
+      {
+        "name": "Pairs",
+        "description": "Endpoints for managing and verifying tradable token pairs (pool registry)."
+      }
+    ],
+    "paths": {
+      "/v1/pairs": {
+        "post": {
+          "tags": ["Pairs"],
+          "summary": "Register a new token pair (Pool)",
+          "description": "Registers a new token pair and its corresponding liquidity pool. Each pair maps to a unique poolId on the Pi blockchain. Can be created for internal or external pools.",
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "baseToken": { "type": "string", "example": "WPI" },
+                    "quoteToken": { "type": "string", "example": "ZYRA" },
+                    "poolId": {
+                      "type": "string",
+                      "example": "78dd060c3becca027bc7de7718b59fc0b19ed8d89430ae8265dd8ef70a104590"
+                    },
+                    "source": {
+                      "type": "string",
+                      "enum": ["internal", "external"],
+                      "example": "internal",
+                      "description": "Specifies whether the pool was created by this DEX or by an external user."
+                    }
+                  },
+                  "required": ["baseToken", "quoteToken", "poolId"]
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Pair registered successfully",
+              "content": {
+                "application/json": {
+                  "example": {
+                    "success": true,
+                    "pair": {
+                      "_id": "671fa1a94bdf22c1e456dc83",
+                      "baseToken": "WPI",
+                      "quoteToken": "ZYRA",
+                      "poolId": "78dd060c3becca027bc7de7718b59fc0b19ed8d89430ae8265dd8ef70a104590",
+                      "verified": false,
+                      "source": "internal",
+                      "createdAt": "2025-10-30T10:33:12.000Z",
+                      "updatedAt": "2025-10-30T10:33:12.000Z"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "get": {
+          "tags": ["Pairs"],
+          "summary": "List all registered pairs",
+          "description": "Returns all token pairs stored in the DEX registry, including both verified and unverified pairs.",
+          "responses": {
+            "200": {
+              "description": "List of pairs",
+              "content": {
+                "application/json": {
+                  "example": {
+                    "success": true,
+                    "pairs": [
+                      {
+                        "baseToken": "WPI",
+                        "quoteToken": "ZYRA",
+                        "poolId": "78dd060c3becca027bc7de7718b59fc0b19ed8d89430ae8265dd8ef70a104590",
+                        "verified": true,
+                        "source": "internal"
+                      },
+                      {
+                        "baseToken": "WPI",
+                        "quoteToken": "PAN",
+                        "poolId": "91ce230ab2a1fd647e25f5b29418a2a6b8813ccf3e04e8337a5209aa8e010fd2",
+                        "verified": false,
+                        "source": "external"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/v1/pairs/verify": {
+        "patch": {
+          "tags": ["Pairs"],
+          "summary": "Verify or unverify a token pair",
+          "description": "Marks a registered pair as verified (approved for public trading) or unverified (hidden). Only admins can perform this action.",
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "poolId": {
+                      "type": "string",
+                      "example": "78dd060c3becca027bc7de7718b59fc0b19ed8d89430ae8265dd8ef70a104590"
+                    },
+                    "verified": {
+                      "type": "boolean",
+                      "example": true
+                    }
+                  },
+                  "required": ["poolId"]
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Pair verification status updated",
+              "content": {
+                "application/json": {
+                  "example": {
+                    "success": true,
+                    "pair": {
+                      "baseToken": "WPI",
+                      "quoteToken": "ZYRA",
+                      "verified": true,
+                      "poolId": "78dd060c3becca027bc7de7718b59fc0b19ed8d89430ae8265dd8ef70a104590"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/v1/pairs/{poolId}": {
+        "delete": {
+          "tags": ["Pairs"],
+          "summary": "Delete a pair",
+          "description": "Removes a registered token pair and its metadata from the DEX registry. Admin only.",
+          "parameters": [
+            {
+              "name": "poolId",
+              "in": "path",
+              "required": true,
+              "schema": { "type": "string" },
+              "example": "78dd060c3becca027bc7de7718b59fc0b19ed8d89430ae8265dd8ef70a104590"
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Pair deleted successfully",
+              "content": {
+                "application/json": {
+                  "example": {
+                    "success": true,
+                    "message": "Pair deleted"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  

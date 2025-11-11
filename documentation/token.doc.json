@@ -1,0 +1,99 @@
+{
+    "tags": [
+      {
+        "name": "Tokens",
+        "description": "Operations for token creation, trustlines, and burning"
+      }
+    ],
+    "paths": {
+      "/v1/tokens": {
+        "get": {
+          "summary": "Get all tokens",
+          "tags": ["Tokens"],
+          "responses": {
+            "200": { "description": "List of all tokens" }
+          }
+        }
+      },
+      "/v1/tokens/trustline": {
+        "post": {
+          "summary": "Establish trustline for a token",
+          "tags": ["Tokens"],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "userSecret": { "type": "string" },
+                    "assetCode": { "type": "string" },
+                    "issuer": { "type": "string" }
+                  },
+                  "required": ["userSecret", "assetCode", "issuer"]
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": { "description": "Trustline established successfully" }
+          }
+        }
+      },
+      "/v1/tokens/mint": {
+        "post": {
+          "summary": "Mint new token",
+          "tags": ["Tokens"],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "distributorSecret": { "type": "string" },
+                    "assetCode": { "type": "string" },
+                    "totalSupply": { "type": "string" },
+                    "homeDomain": { "type": "string" },
+                    "name": { "type": "string" },
+                    "description": { "type": "string" }
+                  },
+                  "required": ["distributorSecret", "assetCode", "totalSupply"]
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": { "description": "Token minted successfully" }
+          }
+        }
+      },
+      "/v1/tokens/burn": {
+        "post": {
+          "summary": "Burn existing tokens",
+          "tags": ["Tokens"],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "assetCode": { "type": "string" },
+                    "amount": { "type": "string" },
+                    "holderSecret": { "type": "string" },
+                    "issuer": { "type": "string" }
+                  },
+                  "required": ["assetCode", "amount", "holderSecret"]
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": { "description": "Token burned successfully" }
+          }
+        }
+      }
+    }
+  }
+  

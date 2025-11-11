@@ -1,0 +1,115 @@
+{
+  "tags": [
+    {
+      "name": "Swap",
+      "description": "Token swapping operations via liquidity pools"
+    }
+  ],
+  "paths": {
+    "/v1/swap": {
+      "post": {
+        "summary": "Swap token using pool matching algthm (simple)",
+        "tags": ["Swap"],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "userSecret": { "type": "string" },
+                  "from": { "type": "object" },
+                  "to": { "type": "object" },
+                  "sendAmount": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Swap completed" } }
+      }
+    },
+    "/v1/swap/quote": {
+      "get": {
+        "summary": "Preview swap result using x*y=k formula",
+        "tags": ["Swap"],
+        "parameters": [
+          { "name": "poolId", "in": "query", "schema": { "type": "string" }, "required": true },
+          { "name": "from", "in": "query", "schema": { "type": "string" }, "required": true },
+          { "name": "to", "in": "query", "schema": { "type": "string" }, "required": true },
+          { "name": "amount", "in": "query", "schema": { "type": "string" }, "required": true },
+          { "name": "slippagePercent", "in": "query", "schema": { "type": "number", "default": 1 } }
+        ],
+        "responses": { "200": { "description": "Swap quote calculated successfully" } }
+      }
+    },
+    "/v1/swap/execute": {
+      "post": {
+        "summary": "Execute token swap through liquidity pool",
+        "tags": ["Swap"],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "userSecret": { "type": "string" },
+                  "poolId": { "type": "string" },
+                  "from": {
+                    "type": "object",
+                    "properties": {
+                      "code": { "type": "string" },
+                      "issuer": { "type": "string" }
+                    },
+                    "required": ["code", "issuer"]
+                  },
+                  "to": {
+                    "type": "object",
+                    "properties": {
+                      "code": { "type": "string" },
+                      "issuer": { "type": "string" }
+                    },
+                    "required": ["code", "issuer"]
+                  },
+                  "sendAmount": { "type": "string" },
+                  "slippagePercent": { "type": "number" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Swap executed successfully" } }
+      }
+    },
+    "/v1/swap/pools-for-pair": {
+      "get": {
+        "summary": "Get list of pools supporting swap between token pair",
+        "tags": ["Swap"],
+        "security": [{ "bearerAuth": [] }], 
+        "parameters": [
+          { "name": "tokenA", "in": "query", "schema": { "type": "string" }, "required": true },
+          { "name": "tokenB", "in": "query", "schema": { "type": "string" }, "required": true }
+        ],
+        "responses": { "200": { "description": "Fetched pools for token pair" } }
+      }
+    },
+    "/v1/swap/distribute-fees": {
+      "post": {
+        "summary": "Distribute accumulated swap fees to LP holders",
+        "tags": ["Swap"],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "poolId": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Fees distributed successfully" } }
+      }
+    }
+  }
+}

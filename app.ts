@@ -8,6 +8,7 @@ import helmet from 'helmet';
 import { logger } from './utils/logger';
 import tomlRoutes from './routes/toml.routes';
 import appRoutes from './routes';
+import { setupSwagger } from './config/swagger';
 
 dotenv.config();
 
@@ -18,6 +19,8 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(requestLogger); 
+
+setupSwagger(app);
 
 app.get('/', (req, res) => {
     res.send({ message: '🚀 Pi DeFi Backend is running' });

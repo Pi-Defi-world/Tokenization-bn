@@ -1,0 +1,175 @@
+{
+  "tags": [
+    {
+      "name": "Fees",
+      "description": "Endpoints for managing all platform and DEX-related fees"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Enter your JWT access token to authorize requests"
+      }
+    }
+  },
+  "paths": {
+    "/v1/fees": {
+      "get": {
+        "tags": ["Fees"],
+        "summary": "List all configured fees",
+        "description": "Returns all fee configurations including their keys, values, and currencies.",
+        "responses": {
+          "200": {
+            "description": "List of all fees",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "fees": [
+                    {
+                      "key": "swap.transaction",
+                      "description": "Fee applied on swap transactions.",
+                      "value": 0.3,
+                      "currency": "ZYRA",
+                      "isActive": true
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Fees"],
+        "summary": "Create a new fee configuration",
+        "description": "Admin-only endpoint to create a new fee rule.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "example": {
+                "key": "pool.creation",
+                "description": "Fee charged when creating a new pool",
+                "value": 50,
+                "currency": "ZYRA",
+                "isActive": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Fee created successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "fee": {
+                    "_id": "671f2c3e2d1a987...",
+                    "key": "pool.creation",
+                    "description": "Fee charged when a user creates a new liquidity pool.",
+                    "value": 50,
+                    "currency": "ZYRA",
+                    "isActive": true
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or fee already exists"
+          }
+        }
+      }
+    },
+    "/v1/fees/{key}": {
+      "put": {
+        "tags": ["Fees"],
+        "summary": "Update an existing fee configuration",
+        "description": "Update fee amount, description, or currency for a specific fee key.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "The key of the fee to update"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "example": {
+                "value": 0.4,
+                "currency": "ZYRA",
+                "isActive": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Fee updated successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Fee updated successfully"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Fee not found"
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Fees"],
+        "summary": "Delete an existing fee configuration",
+        "description": "Deletes a fee configuration by key. Only accessible to authenticated admins.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "The key of the fee to delete"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fee deleted successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "Fee with key 'swap.transaction' has been deleted."
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Fee not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": false,
+                  "message": "Fee not found"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -7,5 +7,6 @@ const tokenRoutes = Router();
 tokenRoutes.get('/',TokenController.getTokens);
 tokenRoutes.post('/trustline', TokenController.trustline);
 tokenRoutes.post('/mint',validateMintTokenFields,TokenController.mint);
+tokenRoutes.post('/burn',TokenController.burnTokens);
 
 export default tokenRoutes;

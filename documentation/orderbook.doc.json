@@ -1,0 +1,100 @@
+{
+    "tags": [
+      {
+        "name": "OrderBook",
+        "description": "Endpoints for retrieving live market order books and user offers from Horizon."
+      }
+    ],
+    "paths": {
+      "/v1/market/orderbook": {
+        "get": {
+          "tags": ["OrderBook"],
+          "summary": "Get order book for a pair",
+          "description": "Retrieves the current order book (bids and asks) for a specified asset pair.",
+          "parameters": [
+            {
+              "name": "base",
+              "in": "query",
+              "required": true,
+              "schema": { "type": "string" },
+              "description": "Base asset (e.g., CODE:ISSUER or 'native')"
+            },
+            {
+              "name": "counter",
+              "in": "query",
+              "required": true,
+              "schema": { "type": "string" },
+              "description": "Counter asset (e.g., CODE:ISSUER or 'native')"
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Order book fetched successfully",
+              "content": {
+                "application/json": {
+                  "example": {
+                    "success": true,
+                    "book": {
+                      "bids": [
+                        { "price": 2.45, "amount": 100 },
+                        { "price": 2.40, "amount": 200 }
+                      ],
+                      "asks": [
+                        { "price": 2.55, "amount": 120 },
+                        { "price": 2.60, "amount": 180 }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/v1/market/offers/{account}": {
+        "get": {
+          "tags": ["OrderBook"],
+          "summary": "List active offers by account",
+          "description": "Returns all active offers created by a specific Stellar account.",
+          "parameters": [
+            {
+              "name": "account",
+              "in": "path",
+              "required": true,
+              "schema": { "type": "string" },
+              "description": "Stellar public key of the account"
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "User offers retrieved successfully",
+              "content": {
+                "application/json": {
+                  "example": {
+                    "success": true,
+                    "offers": [
+                      {
+                        "id": "584320948",
+                        "selling": "WPI",
+                        "buying": "ZYRAPAY",
+                        "amount": "100.0000000",
+                        "price": "2.5"
+                      },
+                      {
+                        "id": "584320951",
+                        "selling": "ZYRAPAY",
+                        "buying": "native",
+                        "amount": "50.0000000",
+                        "price": "0.75"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  
