@@ -6,12 +6,24 @@ const accountService = new AccountService();
 
 export const importAccount = async (req: Request, res: Response) => {
   try {
+    const currentUser = (req as any).currentUser;
     const { mnemonic, secret } = req.body || {};
-    const result = await accountService.importAccount({ mnemonic, secret });
+
+    if (!currentUser) {
+      return res.status(401).json({ message: 'Not authenticated' });
+    }
+
+    const result = await accountService.importAccount({
+      mnemonic,
+      secret,
+      userId: currentUser._id.toString(),
+    });
+
     return res.status(200).json(result);
   } catch (err: any) {
     logger.error('❌ importAccount failed:', err);
-    return res.status(500).json({ message: 'Failed to import account', error: err.message });
+    const statusCode = err.message.includes('Invalid credentials') ? 400 : 500;
+    return res.status(statusCode).json({ message: err.message || 'Failed to import account', error: err.message });
   }
 };
 

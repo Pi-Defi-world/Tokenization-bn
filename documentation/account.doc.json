@@ -7,6 +7,8 @@
       "post": {
         "tags": ["Account"],
         "summary": "Import account from mnemonic or secret",
+        "description": "Imports a Stellar account by deriving the keypair from a mnemonic phrase or secret key. Validates that the derived public key matches the user's existing public_key if one exists. Returns the public key and secret for client-side encryption and passkey setup.",
+        "security": [{ "bearerAuth": [] }],
         "requestBody": {
           "required": true,
           "content": {
@@ -14,15 +16,60 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "mnemonic": { "type": "string" },
-                  "secret": { "type": "string" }
-                }
+                  "mnemonic": {
+                    "type": "string",
+                    "description": "BIP39 mnemonic phrase (12 or 24 words)"
+                  },
+                  "secret": {
+                    "type": "string",
+                    "description": "Stellar secret key (starts with 'S')"
+                  }
+                },
+                "anyOf": [
+                  { "required": ["mnemonic"] },
+                  { "required": ["secret"] }
+                ]
+              },
+              "example": {
+                "mnemonic": "word1 word2 word3 ... word12"
               }
             }
           }
         },
         "responses": {
-          "200": { "description": "Imported successfully" }
+          "200": {
+            "description": "Account imported successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "publicKey": {
+                      "type": "string",
+                      "description": "Stellar public key (wallet address)"
+                    },
+                    "secret": {
+                      "type": "string",
+                      "description": "Stellar secret key (for client-side encryption)"
+                    }
+                  }
+                },
+                "example": {
+                  "publicKey": "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+                  "secret": "SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request - Invalid credentials (public key mismatch) or missing mnemonic/secret"
+          },
+          "401": {
+            "description": "Unauthorized - Authentication required"
+          },
+          "500": {
+            "description": "Internal server error - Failed to import account"
+          }
         }
       }
     },

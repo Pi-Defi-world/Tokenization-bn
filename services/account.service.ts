@@ -1,9 +1,12 @@
 import { server } from '../config/stellar';
 import { getKeypairFromMnemonic, getKeypairFromSecret } from '../utils/keypair';
+import User from '../models/User';
+import { logger } from '../utils/logger';
 
 export interface ImportAccountInput {
   mnemonic?: string;
   secret?: string;
+  userId?: string;
 }
 
 export interface TransactionsQuery {
@@ -22,18 +25,45 @@ export interface OperationsQuery {
 
 export class AccountService {
   public async importAccount(input: ImportAccountInput) {
-    const { mnemonic, secret } = input;
+    const { mnemonic, secret, userId } = input;
     if (!mnemonic && !secret) {
       throw new Error('Provide mnemonic or secret');
     }
 
+    let publicKey: string;
+    let secretKey: string;
+
     if (mnemonic) {
       const kp = await getKeypairFromMnemonic(mnemonic);
-      return { publicKey: kp.publicKey(), secret: kp.secret() };
+      publicKey = kp.publicKey();
+      secretKey = kp.secret();
+    } else {
+      const kp = getKeypairFromSecret(secret as string);
+      publicKey = kp.publicKey();
+      secretKey = kp.secret();
     }
 
-    const kp = getKeypairFromSecret(secret as string);
-    return { publicKey: kp.publicKey(), secret: kp.secret() };
+    // If userId is provided, validate public key matches existing user's public_key
+    if (userId) {
+      const user = await User.findById(userId);
+      if (user) {
+        if (user.public_key && user.public_key.trim() !== '') {
+          if (user.public_key !== publicKey) {
+            throw new Error('Invalid credentials. Please check your mnemonic/secret.');
+          }
+          logger.info(`Public key validated for user ${userId}`);
+        } else {
+          // User exists but doesn't have public_key, store it
+          user.public_key = publicKey;
+          await user.save();
+          logger.info(`Public key stored for user ${userId}`);
+        }
+      } else {
+        throw new Error('User not found');
+      }
+    }
+
+    return { publicKey, secret: secretKey };
   }
 
   public async getBalances(publicKey: string) {

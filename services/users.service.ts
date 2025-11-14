@@ -1,4 +1,3 @@
-
 import { platformAPIClient } from "../config/platiform.config";
 import User from "../models/User";
 import { IAuthResult, IUser } from "../types";

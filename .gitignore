@@ -5,7 +5,7 @@
 /coverage
 
 # environment
-.env
+# .env
 
 # build output
 /dist
@@ -39,3 +39,4 @@ yarn.lock
 usage.ts
 /services/analytics.service.ts
 /models/PoolStat.ts
+pnpm-lock.yaml

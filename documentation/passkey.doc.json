@@ -1,0 +1,496 @@
+{
+  "tags": [
+    {
+      "name": "Passkey",
+      "description": "WebAuthn passkey authentication endpoints for passwordless transaction signing. Passkeys allow users to authenticate using biometric authentication (fingerprint, face recognition, or PIN) instead of entering their secret key for each transaction."
+    }
+  ],
+  "paths": {
+    "/v1/passkey/register/start": {
+      "post": {
+        "tags": ["Passkey"],
+        "summary": "Start passkey registration",
+        "description": "Generates WebAuthn registration options for creating a new passkey. This is typically called during account import to set up passwordless authentication.",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Registration options generated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "options": {
+                      "type": "object",
+                      "description": "WebAuthn PublicKeyCredentialCreationOptions",
+                      "properties": {
+                        "rp": {
+                          "type": "object",
+                          "properties": {
+                            "name": { "type": "string" },
+                            "id": { "type": "string" }
+                          }
+                        },
+                        "user": {
+                          "type": "object",
+                          "properties": {
+                            "id": { "type": "string", "format": "base64url" },
+                            "name": { "type": "string" },
+                            "displayName": { "type": "string" }
+                          }
+                        },
+                        "challenge": { "type": "string", "format": "base64url" },
+                        "pubKeyCredParams": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "type": { "type": "string" },
+                              "alg": { "type": "number" }
+                            }
+                          }
+                        },
+                        "timeout": { "type": "number" },
+                        "attestation": { "type": "string" },
+                        "authenticatorSelection": {
+                          "type": "object",
+                          "properties": {
+                            "residentKey": { "type": "string" },
+                            "userVerification": { "type": "string" },
+                            "authenticatorAttachment": { "type": "string" }
+                          }
+                        }
+                      }
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "description": "Session ID to use when verifying registration"
+                    }
+                  }
+                },
+                "example": {
+                  "options": {
+                    "rp": {
+                      "name": "Pi DeFi",
+                      "id": "localhost"
+                    },
+                    "user": {
+                      "id": "dXNlcklkMTIz",
+                      "name": "username",
+                      "displayName": "User Name"
+                    },
+                    "challenge": "randomChallengeBase64",
+                    "pubKeyCredParams": [
+                      { "type": "public-key", "alg": -7 },
+                      { "type": "public-key", "alg": -257 }
+                    ],
+                    "timeout": 60000,
+                    "attestation": "none",
+                    "authenticatorSelection": {
+                      "residentKey": "required",
+                      "userVerification": "required",
+                      "authenticatorAttachment": "platform"
+                    }
+                  },
+                  "sessionId": "userId-1234567890"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Authentication required"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/v1/passkey/register/verify": {
+      "post": {
+        "tags": ["Passkey"],
+        "summary": "Verify passkey registration",
+        "description": "Verifies the passkey credential created by the client and stores it in the database. Called after the client creates a credential using navigator.credentials.create().",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["credential", "sessionId"],
+                "properties": {
+                  "credential": {
+                    "type": "object",
+                    "description": "WebAuthn credential object from navigator.credentials.create()",
+                    "properties": {
+                      "id": { "type": "string", "format": "base64url" },
+                      "rawId": { "type": "string", "format": "base64url" },
+                      "response": {
+                        "type": "object",
+                        "properties": {
+                          "clientDataJSON": { "type": "string", "format": "base64url" },
+                          "attestationObject": { "type": "string", "format": "base64url" }
+                        }
+                      },
+                      "type": { "type": "string", "enum": ["public-key"] }
+                    }
+                  },
+                  "sessionId": {
+                    "type": "string",
+                    "description": "Session ID returned from /register/start"
+                  }
+                }
+              },
+              "example": {
+                "credential": {
+                  "id": "credentialIdBase64",
+                  "rawId": "credentialIdBase64",
+                  "response": {
+                    "clientDataJSON": "clientDataJSONBase64",
+                    "attestationObject": "attestationObjectBase64"
+                  },
+                  "type": "public-key"
+                },
+                "sessionId": "userId-1234567890"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Passkey registered successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "verified": { "type": "boolean" },
+                    "credentialId": {
+                      "type": "string",
+                      "description": "Unique identifier for the registered passkey"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "verified": true,
+                  "credentialId": "credentialIdBase64"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request - Missing credential or sessionId"
+          },
+          "401": {
+            "description": "Unauthorized - Authentication required"
+          },
+          "500": {
+            "description": "Internal server error - Registration verification failed"
+          }
+        }
+      }
+    },
+    "/v1/passkey/authenticate/start": {
+      "post": {
+        "tags": ["Passkey"],
+        "summary": "Start passkey authentication",
+        "description": "Generates WebAuthn authentication options for verifying an existing passkey. This is called before each transaction that requires authentication.",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Authentication options generated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "options": {
+                      "type": "object",
+                      "description": "WebAuthn PublicKeyCredentialRequestOptions",
+                      "properties": {
+                        "challenge": { "type": "string", "format": "base64url" },
+                        "timeout": { "type": "number" },
+                        "rpID": { "type": "string" },
+                        "allowCredentials": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": { "type": "string", "format": "base64url" },
+                              "type": { "type": "string", "enum": ["public-key"] },
+                              "transports": {
+                                "type": "array",
+                                "items": { "type": "string" }
+                              }
+                            }
+                          }
+                        },
+                        "userVerification": { "type": "string" }
+                      }
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "description": "Session ID to use when verifying authentication"
+                    }
+                  }
+                },
+                "example": {
+                  "options": {
+                    "challenge": "randomChallengeBase64",
+                    "timeout": 60000,
+                    "rpID": "localhost",
+                    "allowCredentials": [
+                      {
+                        "id": "credentialIdBase64",
+                        "type": "public-key",
+                        "transports": ["internal"]
+                      }
+                    ],
+                    "userVerification": "required"
+                  },
+                  "sessionId": "userId-1234567890"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Authentication required"
+          },
+          "500": {
+            "description": "Internal server error - No passkeys found for user"
+          }
+        }
+      }
+    },
+    "/v1/passkey/authenticate/verify": {
+      "post": {
+        "tags": ["Passkey"],
+        "summary": "Verify passkey authentication",
+        "description": "Verifies the passkey assertion from the client and returns a session token. This session token can be used to authorize transactions.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["credential", "sessionId"],
+                "properties": {
+                  "credential": {
+                    "type": "object",
+                    "description": "WebAuthn assertion response from navigator.credentials.get()",
+                    "properties": {
+                      "id": { "type": "string", "format": "base64url" },
+                      "rawId": { "type": "string", "format": "base64url" },
+                      "response": {
+                        "type": "object",
+                        "properties": {
+                          "clientDataJSON": { "type": "string", "format": "base64url" },
+                          "authenticatorData": { "type": "string", "format": "base64url" },
+                          "signature": { "type": "string", "format": "base64url" },
+                          "userHandle": { "type": "string", "format": "base64url", "nullable": true }
+                        }
+                      },
+                      "type": { "type": "string", "enum": ["public-key"] }
+                    }
+                  },
+                  "sessionId": {
+                    "type": "string",
+                    "description": "Session ID returned from /authenticate/start"
+                  }
+                }
+              },
+              "example": {
+                "credential": {
+                  "id": "credentialIdBase64",
+                  "rawId": "credentialIdBase64",
+                  "response": {
+                    "clientDataJSON": "clientDataJSONBase64",
+                    "authenticatorData": "authenticatorDataBase64",
+                    "signature": "signatureBase64",
+                    "userHandle": null
+                  },
+                  "type": "public-key"
+                },
+                "sessionId": "userId-1234567890"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authentication verified successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "verified": { "type": "boolean" },
+                    "credentialId": {
+                      "type": "string",
+                      "description": "Identifier of the authenticated passkey"
+                    },
+                    "sessionToken": {
+                      "type": "string",
+                      "description": "Session token for authorizing transactions (currently returns sessionId, in production should be a JWT)"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "verified": true,
+                  "credentialId": "credentialIdBase64",
+                  "sessionToken": "userId-1234567890"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request - Missing credential or sessionId"
+          },
+          "401": {
+            "description": "Unauthorized - Authentication failed or expired"
+          },
+          "500": {
+            "description": "Internal server error - Authentication verification failed"
+          }
+        }
+      }
+    },
+    "/v1/passkey/list": {
+      "get": {
+        "tags": ["Passkey"],
+        "summary": "List user's passkeys",
+        "description": "Retrieves all active passkeys registered for the authenticated user. Useful for managing multiple devices.",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "List of passkeys retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "passkeys": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "credentialId": {
+                            "type": "string",
+                            "description": "Unique identifier for the passkey"
+                          },
+                          "deviceName": {
+                            "type": "string",
+                            "description": "Name of the device (e.g., 'Windows Device', 'iOS Device')"
+                          },
+                          "lastUsedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "nullable": true,
+                            "description": "Timestamp of last authentication"
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "description": "Timestamp of passkey registration"
+                          },
+                          "isActive": {
+                            "type": "boolean",
+                            "description": "Whether the passkey is currently active"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "passkeys": [
+                    {
+                      "credentialId": "credentialIdBase64",
+                      "deviceName": "Windows Device",
+                      "lastUsedAt": "2024-01-15T10:30:00.000Z",
+                      "createdAt": "2024-01-10T08:00:00.000Z",
+                      "isActive": true
+                    },
+                    {
+                      "credentialId": "anotherCredentialIdBase64",
+                      "deviceName": "iOS Device",
+                      "lastUsedAt": null,
+                      "createdAt": "2024-01-12T14:20:00.000Z",
+                      "isActive": true
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Authentication required"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/v1/passkey/{credentialId}": {
+      "delete": {
+        "tags": ["Passkey"],
+        "summary": "Delete a passkey",
+        "description": "Deletes (deactivates) a specific passkey. Cannot delete the last remaining passkey to ensure users always have access.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "credentialId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The credential ID of the passkey to delete"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Passkey deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "message": { "type": "string" }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "message": "Passkey deleted successfully"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request - Missing credentialId or cannot delete last passkey"
+          },
+          "401": {
+            "description": "Unauthorized - Authentication required"
+          },
+          "404": {
+            "description": "Not found - Passkey not found"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    }
+  }
+}
+

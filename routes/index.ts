@@ -9,6 +9,7 @@ import pairRoutes from "./pairs.routes";
 import orderbookRoutes from "./orderbook.routes";
 import tradeRoutes from "./trade.routes";
 import accountRoutes from "./account.routes";
+import passkeyRoutes from "./passkey.routes";
 
 
 
@@ -23,5 +24,6 @@ appRoutes.use("/pairs", pairRoutes)
 appRoutes.use("/market", orderbookRoutes)
 appRoutes.use("/trade", tradeRoutes)
 appRoutes.use("/account", accountRoutes)
+appRoutes.use("/passkey", passkeyRoutes)
 
 export default appRoutes
