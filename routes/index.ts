@@ -10,6 +10,7 @@ import orderbookRoutes from "./orderbook.routes";
 import tradeRoutes from "./trade.routes";
 import accountRoutes from "./account.routes";
 import passkeyRoutes from "./passkey.routes";
+import encryptedSecretRoutes from "./encrypted-secret.routes";
 
 
 
@@ -25,5 +26,6 @@ appRoutes.use("/market", orderbookRoutes)
 appRoutes.use("/trade", tradeRoutes)
 appRoutes.use("/account", accountRoutes)
 appRoutes.use("/passkey", passkeyRoutes)
+appRoutes.use("/encrypted-secret", encryptedSecretRoutes)
 
 export default appRoutes
