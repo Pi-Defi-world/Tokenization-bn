@@ -25,7 +25,7 @@ const challenges = new Map<string, ChallengeStore>();
 const CHALLENGE_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
 
 function getRPID(requestOrigin?: string): string {
-  if (env.WEBAUTHN_RP_ID && env.WEBAUTHN_RP_ID !== 'localhost') {
+  if (env.WEBAUTHN_RP_ID && env.WEBAUTHN_RP_ID !== '') {
     return env.WEBAUTHN_RP_ID;
   }
   if (requestOrigin) {
@@ -33,10 +33,10 @@ function getRPID(requestOrigin?: string): string {
       const url = new URL(requestOrigin);
       return url.hostname;
     } catch {
-      return 'localhost';
+      return '';
     }
   }
-  return 'localhost';
+  return '';
 }
 
 function getOrigin(requestOrigin?: string): string {
@@ -44,9 +44,16 @@ function getOrigin(requestOrigin?: string): string {
     return env.WEBAUTHN_ORIGIN;
   }
   if (requestOrigin) {
-    return requestOrigin;
+    try {
+      // Extract just the origin (protocol + hostname + port) from the URL
+      const url = new URL(requestOrigin);
+      return url.origin;
+    } catch {
+      // If parsing fails, return as-is (fallback)
+      return requestOrigin;
+    }
   }
-  return 'http://localhost:3000';
+  return 'https://tokenization-bn.vercel.app';
 }
 
 export class PasskeyService {
@@ -195,7 +202,7 @@ export class PasskeyService {
         allowCredentials: passkeys.map((passkey) => ({
           id: passkey.credentialId,
           type: 'public-key' as const,
-          transports: ['internal'] as const,
+          transports: ['internal'] as ('internal')[],
         })),
         userVerification: 'required',
       };
