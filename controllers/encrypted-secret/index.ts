@@ -10,17 +10,34 @@ const encryptedSecretService = new EncryptedSecretService();
  */
 export const storeEncryptedSecret = async (req: Request, res: Response) => {
   try {
+    logger.info('📥 POST /v1/encrypted-secret - Request received');
     const currentUser = (req as any).currentUser;
     const { publicKey, encryptedSecret, iv, salt } = req.body || {};
 
+    logger.info('📥 Request body:', {
+      hasPublicKey: !!publicKey,
+      hasEncryptedSecret: !!encryptedSecret,
+      hasIv: !!iv,
+      hasSalt: !!salt,
+      publicKey: publicKey?.substring(0, 10) + '...',
+      encryptedSecretLength: encryptedSecret?.length,
+      ivLength: iv?.length,
+      saltLength: salt?.length,
+    });
+
     if (!currentUser) {
+      logger.warn('❌ Not authenticated');
       return res.status(401).json({ message: 'Not authenticated' });
     }
 
+    logger.info(`✅ User authenticated: ${currentUser._id.toString()}`);
+
     if (!publicKey || !encryptedSecret || !iv || !salt) {
+      logger.warn('❌ Missing required fields');
       return res.status(400).json({ message: 'Missing required fields: publicKey, encryptedSecret, iv, salt' });
     }
 
+    logger.info('📦 Storing encrypted secret...');
     await encryptedSecretService.storeEncryptedSecret({
       userId: currentUser._id.toString(),
       publicKey,
@@ -29,6 +46,7 @@ export const storeEncryptedSecret = async (req: Request, res: Response) => {
       salt,
     });
 
+    logger.success('✅ Encrypted secret stored successfully');
     return res.status(200).json({ success: true, message: 'Encrypted secret stored successfully' });
   } catch (err: any) {
     logger.error('❌ storeEncryptedSecret failed:', err);
