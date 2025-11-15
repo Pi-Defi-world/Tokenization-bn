@@ -106,12 +106,35 @@ export class AccountService {
 
       return { publicKey, balances };
     } catch (error: any) {
-      // Handle account not found - account may not exist on Pi network yet
-      if (error?.response?.status === 404 || error?.message?.includes('Not Found') || error?.message?.includes('not found')) {
+      // Log the actual error for debugging
+      logger.error(`Error fetching balances for account ${publicKey}:`, {
+        message: error?.message,
+        status: error?.response?.status,
+        statusText: error?.response?.statusText,
+        errorType: error?.constructor?.name,
+        responseData: error?.response?.data,
+      });
+
+      // Only treat as "account not found" if:
+      // 1. HTTP status is 404 (Not Found)
+      // 2. OR error message specifically mentions account not found
+      // 3. OR it's a Stellar NotFoundError
+      const isNotFoundError =
+        error?.response?.status === 404 ||
+        error?.constructor?.name === 'NotFoundError' ||
+        (error?.message && (
+          error.message.toLowerCase().includes('account not found') ||
+          error.message.toLowerCase().includes('not found: account') ||
+          error.message === 'Not Found'
+        ));
+
+      if (isNotFoundError) {
         logger.info(`Account ${publicKey} not found on Pi network, returning empty balances`);
         return { publicKey, balances: [] };
       }
-      // Re-throw other errors
+
+      // Re-throw other errors (network issues, server errors, etc.)
+      logger.error(`Failed to fetch balances for account ${publicKey}:`, error);
       throw error;
     }
   }

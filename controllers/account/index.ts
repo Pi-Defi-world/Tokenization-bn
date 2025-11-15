@@ -33,13 +33,29 @@ export const getAccountBalance = async (req: Request, res: Response) => {
         (typeof req.query.publicKey === 'string' && req.query.publicKey) ||
         (typeof req.params.publicKey === 'string' && req.params.publicKey);
 
-      const result = await accountService.getBalances(publicKey || '');
+      if (!publicKey) {
+        return res.status(400).json({ message: 'publicKey is required' });
+      }
+
+      const result = await accountService.getBalances(publicKey);
+      
+      // Return 200 with the result (even if balances are empty)
+      // The service handles "account not found" by returning empty balances
       return res.status(200).json(result);
     } catch (err: any) {
-      logger.error('❌ getAccountBalance failed:', err);
-      return res
-        .status(500)
-        .json({ message: 'Failed to fetch account balance', error: err.response?.data || err.message });
+      logger.error('❌ getAccountBalance failed:', {
+        error: err.message,
+        stack: err.stack,
+        response: err.response?.data,
+        status: err.response?.status,
+      });
+      
+      // Only return 500 for actual server errors, not for account not found
+      const statusCode = err.response?.status === 404 ? 200 : 500;
+      return res.status(statusCode).json({ 
+        message: 'Failed to fetch account balance', 
+        error: err.response?.data || err.message 
+      });
     }
   };
   
