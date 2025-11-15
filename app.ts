@@ -26,7 +26,8 @@ app.get('/', (req, res) => {
 
 app.use('/v1', appRoutes);
 
-app.get('/:assetCode/.well-known/stellar.toml', tomlRoutes);
+// Pi Wallet expects pi.toml at /.well-known/pi.toml (not stellar.toml)
+app.get('/.well-known/pi.toml', tomlRoutes);
 
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
     logger.error('Unhandled Error:', err);

@@ -71,39 +71,49 @@ export class AccountService {
       throw new Error('publicKey is required');
     }
 
-    const account = await server.loadAccount(publicKey);
+    try {
+      const account = await server.loadAccount(publicKey);
 
-    const THRESHOLD = 0.1;
+      const THRESHOLD = 0.1;
 
-    const balances = (account.balances || [])
-      .map((b: any) => {
-        const amountNum =
-          typeof b.balance === 'string' ? parseFloat(b.balance) : Number(b.balance || 0);
+      const balances = (account.balances || [])
+        .map((b: any) => {
+          const amountNum =
+            typeof b.balance === 'string' ? parseFloat(b.balance) : Number(b.balance || 0);
 
-        let assetLabel: string;
-        if (b.asset_type === 'native') {
-          assetLabel = 'Test Pi';
-        } else if (b.asset_type === 'liquidity_pool_shares') {
-          assetLabel = `liquidity_pool:${b.liquidity_pool_id || 'unknown'}`;
-        } else {
-          assetLabel = `${b.asset_code}:${b.asset_issuer}`;
-        }
+          let assetLabel: string;
+          if (b.asset_type === 'native') {
+            assetLabel = 'Test Pi';
+          } else if (b.asset_type === 'liquidity_pool_shares') {
+            assetLabel = `liquidity_pool:${b.liquidity_pool_id || 'unknown'}`;
+          } else {
+            assetLabel = `${b.asset_code}:${b.asset_issuer}`;
+          }
 
-        return {
-          assetType: b.asset_type,
-          assetCode: b.asset_code || 'XLM',
-          assetIssuer: b.asset_issuer || null,
-          asset: assetLabel,
-          amount: amountNum,
-          raw: b.balance,
-        };
-      })
-      .filter((entry: any) => {
-        if (Number.isNaN(entry.amount)) return false;
-        return entry.amount > THRESHOLD;
-      });
+          return {
+            assetType: b.asset_type,
+            assetCode: b.asset_code || 'XLM',
+            assetIssuer: b.asset_issuer || null,
+            asset: assetLabel,
+            amount: amountNum,
+            raw: b.balance,
+          };
+        })
+        .filter((entry: any) => {
+          if (Number.isNaN(entry.amount)) return false;
+          return entry.amount > THRESHOLD;
+        });
 
-    return { publicKey, balances };
+      return { publicKey, balances };
+    } catch (error: any) {
+      // Handle account not found - account may not exist on Pi network yet
+      if (error?.response?.status === 404 || error?.message?.includes('Not Found') || error?.message?.includes('not found')) {
+        logger.info(`Account ${publicKey} not found on Pi network, returning empty balances`);
+        return { publicKey, balances: [] };
+      }
+      // Re-throw other errors
+      throw error;
+    }
   }
 
   public async getOperations(params: OperationsQuery) {

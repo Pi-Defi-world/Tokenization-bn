@@ -5,6 +5,12 @@ import { logger } from '../utils/logger';
 
 export class PoolService {
   private async ensureTrustline(userSecret: string, assetCode: string, issuer: string) {
+    // Native assets don't need trustlines
+    if (assetCode === 'native' || !issuer) {
+      logger.info(`ℹ️ Skipping trustline for native asset`);
+      return;
+    }
+
     try {
       const user = StellarSdk.Keypair.fromSecret(userSecret);
       const publicKey = user.publicKey();
@@ -25,10 +31,16 @@ export class PoolService {
       logger.info(`🔹 Creating trustline for ${assetCode}`);
 
       const asset = getAsset(assetCode, issuer);
-      const baseFee = await server.fetchBaseFee();
+      let fee: string = "100000"; // Default fee: 0.01 Pi
+      try {
+        const fetchedFee = await server.fetchBaseFee();
+        fee = fetchedFee.toString();
+      } catch (feeError: any) {
+        logger.warn(`⚠️ Failed to fetch base fee, using default (0.01 Pi)`);
+      }
 
       const tx = new StellarSdk.TransactionBuilder(account, {
-        fee: baseFee.toString(),
+        fee,
         networkPassphrase: env.NETWORK,
       })
         .addOperation(

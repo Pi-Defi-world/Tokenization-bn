@@ -21,13 +21,48 @@ class TokenService {
     issuer: string,
     limit = "10000000000"
   ) {
-    try {
-      const user = StellarSdk.Keypair.fromSecret(userSecret);
-      const account = await server.loadAccount(user.publicKey());
-      const asset = getAsset(assetCode, issuer);
-      const fee = (await server.fetchBaseFee()).toString();
+    const user = StellarSdk.Keypair.fromSecret(userSecret);
+    const userPublicKey = user.publicKey();
+    
+    // Retry logic for loading account (Horizon API can be flaky)
+    let account;
+    const maxRetries = 3;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        if (attempt > 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        }
+        account = await server.loadAccount(userPublicKey);
+        break;
+      } catch (loadError: any) {
+        if (attempt === maxRetries) {
+          logger.error(`❌ Failed to load account ${userPublicKey} after ${maxRetries} attempts`);
+          throw loadError;
+        }
+      }
+    }
 
-      const tx = new StellarSdk.TransactionBuilder(account, {
+    // Check if trustline already exists
+    const trustlineExists = account!.balances.some(
+      (b: any) => b.asset_code === assetCode && b.asset_issuer === issuer
+    );
+
+    if (trustlineExists) {
+      logger.info(`ℹ️ Trustline for ${assetCode} already exists on ${userPublicKey}`);
+      return { success: true };
+    }
+
+    try {
+      const asset = getAsset(assetCode, issuer);
+      let fee: string = "100000"; // Default fee: 0.01 Pi
+      try {
+        const fetchedFee = await server.fetchBaseFee();
+        fee = fetchedFee.toString();
+      } catch (feeError: any) {
+        logger.warn(`⚠️ Failed to fetch base fee, using default (0.01 Pi)`);
+      }
+
+      const tx = new StellarSdk.TransactionBuilder(account!, {
         fee,
         networkPassphrase: env.NETWORK,
       })
@@ -39,18 +74,10 @@ class TokenService {
       await server.submitTransaction(tx);
       
       logger.success(
-        `✅ Trustline established for ${asset.getCode()} on ${user.publicKey()}`
+        `✅ Trustline established for ${asset.getCode()} on ${userPublicKey}`
       );
       return { success: true };
     } catch (err: any) {
-      const userPublicKey = (() => {
-        try {
-          return StellarSdk.Keypair.fromSecret(userSecret).publicKey();
-        } catch {
-          return "unknown";
-        }
-      })();
-
       logger.error(
         `❌ Failed to establish trustline for asset ${assetCode} (issuer: ${issuer}) for user: ${userPublicKey}`
       );

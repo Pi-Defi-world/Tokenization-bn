@@ -25,6 +25,7 @@ class UsersService {
     try {
       let user = await User.findOne({ username: authResult.user.username });
       if (!user) {
+        // User doesn't exist, create new user
         user = new User({
           uid: authResult.user.uid,
           username: authResult.user.username,
@@ -35,21 +36,33 @@ class UsersService {
           verified: false,
         });
         await user.save();
+        logger.info(`New user created: ${authResult.user.username}`);
+      } else {
+        // User exists, update uid if it changed
+        if (user.uid !== authResult.user.uid) {
+          user.uid = authResult.user.uid;
+          await user.save();
+          logger.info(`User uid updated: ${authResult.user.username}`);
+        }
       }
 
       const plainUser = await User.findById(user._id);
 
+      if (!plainUser) {
+        throw new Error("User not found after creation");
+      }
+
       const token = jwtService.generateToken({
-        id: plainUser!.id,
-        username: plainUser!.username,
+        id: plainUser.id,
+        username: plainUser.username,
       });
 
       return {
-        user: plainUser!,
+        user: plainUser,
         token,
       };
     } catch (error) {
-      console.error(error);
+      logger.error('Error in signInUser:', error);
       throw error;
     }
   }

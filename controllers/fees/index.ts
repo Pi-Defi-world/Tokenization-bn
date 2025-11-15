@@ -15,7 +15,7 @@ export const createFee = async (req: Request, res: Response) => {
       key,
       description,
       value,
-      currency: currency || 'ZYRA',
+      currency: currency || 'PI',
       isActive: isActive ?? true,
     });
 
