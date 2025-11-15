@@ -141,9 +141,47 @@ class TokenService {
         homeDomain || `https://www.zyrapay.net/${assetCode}`;
 
       // Load issuer account first to verify it exists
+      // Add retry logic in case of temporary Horizon API issues
       logger.info(`🔹 Loading issuer account: ${issuerPublicKey}`);
-      let issuerAccount = await server.loadAccount(issuerPublicKey);
-      logger.info(`✅ Issuer account loaded successfully`);
+      logger.info(`   Horizon URL: ${env.HORIZON_URL}`);
+      let issuerAccount;
+      const maxRetries = 3;
+      let lastError: any = null;
+      
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          if (attempt > 1) {
+            logger.info(`   Retry attempt ${attempt}/${maxRetries}...`);
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
+          }
+          issuerAccount = await server.loadAccount(issuerPublicKey);
+          logger.info(`✅ Issuer account loaded successfully`);
+          logger.info(`   Account sequence: ${issuerAccount.sequenceNumber()}`);
+          logger.info(`   Account balances: ${JSON.stringify(issuerAccount.balances)}`);
+          break; // Success, exit retry loop
+        } catch (accountError: any) {
+          lastError = accountError;
+          logger.warn(`   Attempt ${attempt} failed: ${accountError.message}`);
+          if (accountError.response) {
+            logger.warn(`   Response status: ${accountError.response.status}`);
+          }
+          if (attempt === maxRetries) {
+            // Final attempt failed
+            logger.error(`❌ Issuer account not found after ${maxRetries} attempts: ${issuerPublicKey}`);
+            logger.error(`   Error: ${accountError.message || JSON.stringify(accountError)}`);
+            if (accountError.response) {
+              logger.error(`   Response status: ${accountError.response.status}`);
+              logger.error(`   Response data: ${JSON.stringify(accountError.response.data, null, 2)}`);
+            }
+            throw new Error(
+              `Failed to load issuer account ${issuerPublicKey} from Pi Network Horizon API. ` +
+              `The account exists on Pi Explorer but the Horizon API returned "Not Found". ` +
+              `This might be a temporary API issue. Please try again in a few moments. ` +
+              `Horizon URL: ${env.HORIZON_URL}`
+            );
+          }
+        }
+      }
       
       // Set home domain if needed (this will update the account sequence)
       let homeDomainWasSet = false;
