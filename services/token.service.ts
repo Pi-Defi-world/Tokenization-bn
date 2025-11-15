@@ -322,8 +322,9 @@ class TokenService {
         logger.error(`❌ Transaction submission failed`);
         logger.error(`   Error type: ${submitError.constructor.name}`);
         logger.error(`   Error message: ${submitError.message}`);
+        logger.error(`   Full error object: ${JSON.stringify(submitError, Object.getOwnPropertyNames(submitError), 2)}`);
         
-        // Log detailed Stellar error if available
+        // Log detailed Stellar error if available - check multiple possible structures
         if (submitError.response) {
           logger.error(`   Response status: ${submitError.response.status}`);
           logger.error(`   Response data: ${JSON.stringify(submitError.response.data, null, 2)}`);
@@ -331,7 +332,23 @@ class TokenService {
           if (submitError.response.data?.extras?.result_codes) {
             logger.error(`   Result codes: ${JSON.stringify(submitError.response.data.extras.result_codes, null, 2)}`);
           }
+          
+          if (submitError.response.data?.extras?.result_xdr) {
+            logger.error(`   Result XDR: ${submitError.response.data.extras.result_xdr}`);
+          }
         }
+        
+        // Check for Stellar SDK specific error properties
+        if (submitError.responseData) {
+          logger.error(`   ResponseData: ${JSON.stringify(submitError.responseData, null, 2)}`);
+        }
+        
+        if (submitError.extras) {
+          logger.error(`   Extras: ${JSON.stringify(submitError.extras, null, 2)}`);
+        }
+        
+        // Log the entire error to see its structure
+        logger.error(`   Error keys: ${Object.keys(submitError).join(', ')}`);
         
         throw submitError;
       }
