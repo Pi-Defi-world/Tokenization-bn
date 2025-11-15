@@ -66,6 +66,23 @@ class UsersService {
       throw error;
     }
   }
+
+  async removePublicKey(userId: string): Promise<void> {
+    try {
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new Error('User not found');
+      }
+
+      // Remove public_key from user
+      user.public_key = "";
+      await user.save();
+      logger.info(`Public key removed for user ${userId}`);
+    } catch (error) {
+      logger.error('Error removing public key:', error);
+      throw error;
+    }
+  }
 }
 
 export const usersService = new UsersService();

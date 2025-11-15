@@ -41,3 +41,17 @@ export const updateFee = async (req: Request, res: Response) => {
     res.status(400).json({ success: false, message: err.message });
   }
 };
+
+export const deleteFee = async (req: Request, res: Response) => {
+  try {
+    const { key } = req.params;
+    if (!key) {
+      return res.status(400).json({ success: false, message: 'key is required' });
+    }
+
+    await feeService.deleteFee(key);
+    res.json({ success: true, message: 'Fee deleted successfully' });
+  } catch (err: any) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+};
