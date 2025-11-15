@@ -21,14 +21,32 @@ export class OrderBookService {
 
   async getOffersByAccount(accountId: string) {
     const res = await server.offers("accounts", accountId).call();
-    return res.records.map((o: any) => ({
-      id: o.id,
-      selling: o.selling,
-      buying: o.buying,
-      amount: Number(o.amount),
-      price: o.price,
-      last_modified_ledger: o.last_modified_ledger,
-    }));
+    return res.records.map((o: any) => {
+      // Format selling asset
+      let sellingStr: string;
+      if (o.selling.asset_type === "native") {
+        sellingStr = "native";
+      } else {
+        sellingStr = `${o.selling.asset_code}:${o.selling.asset_issuer}`;
+      }
+
+      // Format buying asset
+      let buyingStr: string;
+      if (o.buying.asset_type === "native") {
+        buyingStr = "native";
+      } else {
+        buyingStr = `${o.buying.asset_code}:${o.buying.asset_issuer}`;
+      }
+
+      return {
+        id: String(o.id),
+        selling: sellingStr,
+        buying: buyingStr,
+        amount: String(o.amount),
+        price: String(o.price),
+        last_modified_ledger: o.last_modified_ledger,
+      };
+    });
   }
 }
 
