@@ -277,6 +277,23 @@ class TokenService {
       );
 
       logger.info(`🔹 Creating payment transaction: ${totalSupply} ${assetCode} to ${distributorPublicKey}`);
+      logger.info(`   Asset: ${asset.getCode()} issued by ${asset.getIssuer()}`);
+      logger.info(`   Issuer account flags: ${JSON.stringify({
+        authRequired: issuerAccount.flags.auth_required,
+        authRevocable: issuerAccount.flags.auth_revocable,
+        authImmutable: issuerAccount.flags.auth_immutable,
+        authClawbackEnabled: issuerAccount.flags.auth_clawback_enabled
+      })}`);
+      
+      // Check issuer balances to see if they already have this asset
+      const issuerHasAsset = issuerAccount.balances.some((b: any) => 
+        b.asset_code === assetCode && b.asset_issuer === issuerPublicKey
+      );
+      logger.info(`   Issuer already has ${assetCode} balance: ${issuerHasAsset}`);
+      
+      // Note: In Stellar, the issuer can send their own asset without having it in balance
+      // The payment operation from issuer creates the asset
+      
       const fee = (await server.fetchBaseFee()).toString();
 
       const tx = new StellarSdk.TransactionBuilder(issuerAccount, {
