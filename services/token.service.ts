@@ -4,6 +4,7 @@ import env from "../config/env";
 import { logger } from "../utils/logger";
 import Token from "../models/Token";
 import { ICreateTokenPayload } from "../types";
+import axios from "axios";
 
 export interface MintTokenParams {
   distributorSecret: string;
@@ -22,8 +23,6 @@ class TokenService {
   ) {
     try {
       const user = StellarSdk.Keypair.fromSecret(userSecret);
-      logger.info(`🔹 Establishing trustline for user: ${user.publicKey()}`);
-
       const account = await server.loadAccount(user.publicKey());
       const asset = getAsset(assetCode, issuer);
       const fee = (await server.fetchBaseFee()).toString();
@@ -37,12 +36,12 @@ class TokenService {
         .build();
 
       tx.sign(user);
-
-      const result = await server.submitTransaction(tx);
+      await server.submitTransaction(tx);
+      
       logger.success(
         `✅ Trustline established for ${asset.getCode()} on ${user.publicKey()}`
       );
-      return result;
+      return { success: true };
     } catch (err: any) {
       const userPublicKey = (() => {
         try {
@@ -55,26 +54,49 @@ class TokenService {
       logger.error(
         `❌ Failed to establish trustline for asset ${assetCode} (issuer: ${issuer}) for user: ${userPublicKey}`
       );
-      logger.error(JSON.stringify(err.response?.data || err.message));
+      if (err.response?.data) {
+        logger.error(`Error: ${JSON.stringify(err.response.data)}`);
+      } else {
+        logger.error(`Error: ${err.message}`);
+      }
       throw err;
+    }
+  }
+
+  private extractDomain(homeDomain: string): string {
+    try {
+      // If it's already just a domain, return as is
+      if (!homeDomain.includes('://') && !homeDomain.includes('/')) {
+        return homeDomain;
+      }
+      
+      // Extract domain from URL
+      const url = new URL(homeDomain.startsWith('http') ? homeDomain : `https://${homeDomain}`);
+      return url.hostname;
+    } catch {
+      // If URL parsing fails, try to extract domain manually
+      const match = homeDomain.match(/(?:https?:\/\/)?([^\/]+)/);
+      return match ? match[1] : homeDomain;
     }
   }
 
   async setHomeDomain(issuerSecret: string, homeDomain: string) {
     try {
       const issuer = StellarSdk.Keypair.fromSecret(issuerSecret);
-      logger.info(
-        `🔹 Setting home domain "${homeDomain}" for issuer: ${issuer.publicKey()}`
-      );
+      const domain = this.extractDomain(homeDomain);
       const issuerAccount = await server.loadAccount(issuer.publicKey());
-      const fee = (await server.fetchBaseFee()).toString();
       
+      if (issuerAccount.home_domain === domain) {
+        return { hash: 'no-op' };
+      }
+      
+      const fee = (await server.fetchBaseFee()).toString();
 
       const tx = new StellarSdk.TransactionBuilder(issuerAccount, {
         fee,
         networkPassphrase: env.NETWORK,
       })
-        .addOperation(StellarSdk.Operation.setOptions({ homeDomain }))
+        .addOperation(StellarSdk.Operation.setOptions({ homeDomain: domain }))
         .setTimeout(60)
         .build();
 
@@ -82,7 +104,7 @@ class TokenService {
       const result = await server.submitTransaction(tx);
 
       logger.success(
-        `✅ Home domain "${homeDomain}" set successfully for issuer: ${issuer.publicKey()}`
+        `✅ Home domain "${domain}" set successfully for issuer: ${issuer.publicKey()}`
       );
       return result;
     } catch (err: any) {
@@ -97,7 +119,11 @@ class TokenService {
       logger.error(
         `❌ Failed to set home domain "${homeDomain}" for issuer: ${issuerPublicKey}`
       );
-      logger.error(JSON.stringify(err.response?.data || err.message));
+      if (err.response?.data) {
+        logger.error(`Error: ${JSON.stringify(err.response.data)}`);
+      } else {
+        logger.error(`Error: ${err.message}`);
+      }
       throw err;
     }
   }
@@ -107,29 +133,60 @@ class TokenService {
       params;
 
     try {
-      logger.info("🔹 Starting mintToken function");
-
       const issuer = StellarSdk.Keypair.fromSecret(env.PLATFORM_ISSUER_SECRET);
+      const issuerPublicKey = issuer.publicKey();
       const finalHomeDomain =
         homeDomain || `https://www.zyrapay.net/${assetCode}`;
 
+      // Load issuer account
+      let issuerAccount = await server.loadAccount(issuerPublicKey);
+
+      // Set home domain if needed (optional, non-blocking)
       if (finalHomeDomain) {
-        await this.setHomeDomain(env.PLATFORM_ISSUER_SECRET, finalHomeDomain);
+        try {
+          const homeDomainResult = await this.setHomeDomain(env.PLATFORM_ISSUER_SECRET, finalHomeDomain);
+          if (homeDomainResult && homeDomainResult.hash !== 'no-op') {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            const maxRetries = 3;
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+              try {
+                if (attempt > 1) {
+                  await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+                }
+                issuerAccount = await server.loadAccount(issuerPublicKey);
+                break;
+              } catch (reloadError: any) {
+                if (attempt === maxRetries) {
+                  logger.warn(`⚠️ Failed to reload issuer account after ${maxRetries} attempts, using original account`);
+                }
+              }
+            }
+          }
+        } catch (homeDomainError: any) {
+          logger.warn(`⚠️ Failed to set home domain, continuing: ${homeDomainError.message}`);
+        }
       }
 
-      const issuerAccount = await server.loadAccount(issuer.publicKey());
-      const asset = getAsset(assetCode, issuer.publicKey());
-
+      // Prepare asset and distributor
+      const asset = getAsset(assetCode, issuerPublicKey);
       const distributor = StellarSdk.Keypair.fromSecret(distributorSecret);
-      logger.info(`💳 Distributor loaded: ${distributor.publicKey()}`);
+      const distributorPublicKey = distributor.publicKey();
 
+      // Establish trustline
       await this.establishTrustline(
         distributorSecret,
         assetCode,
-        issuer.publicKey()
+        issuerPublicKey
       );
 
-      const fee = (await server.fetchBaseFee()).toString();
+      // Create payment transaction
+      let fee: string = "100000"; // Default fee: 0.01 Pi
+      try {
+        const fetchedFee = await server.fetchBaseFee();
+        fee = fetchedFee.toString();
+      } catch (feeError: any) {
+        logger.warn(`⚠️ Failed to fetch base fee, using default (0.01 Pi)`);
+      }
 
       const tx = new StellarSdk.TransactionBuilder(issuerAccount, {
         fee,
@@ -137,7 +194,7 @@ class TokenService {
       })
         .addOperation(
           StellarSdk.Operation.payment({
-            destination: distributor.publicKey(),
+            destination: distributorPublicKey,
             asset,
             amount: totalSupply,
           })
@@ -147,22 +204,64 @@ class TokenService {
 
       tx.sign(issuer);
 
-      const result = await server.submitTransaction(tx);
-      logger.success("🚀 Token minted successfully");
-      logger.info(`Transaction hash: ${result.hash}`);
+      // Submit transaction (workaround for SDK v14 bug)
+      let result;
+      try {
+        const txXdr = tx.toXDR();
+        const submitUrl = `${env.HORIZON_URL}/transactions`;
+        
+        const response = await axios.post(submitUrl, `tx=${encodeURIComponent(txXdr)}`, {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+        });
+        
+        result = {
+          hash: response.data.hash,
+          ledger: response.data.ledger,
+          envelope_xdr: response.data.envelope_xdr,
+          result_xdr: response.data.result_xdr,
+          result_meta_xdr: response.data.result_meta_xdr,
+        };
+        
+        logger.success(`🚀 Token minted successfully - Hash: ${result.hash}`);
+      } catch (submitError: any) {
+        logger.error(`❌ Transaction submission failed`);
+        if (submitError.response?.data) {
+          const errorData = submitError.response.data;
+          if (errorData.extras?.result_codes) {
+            logger.error(`Result codes: ${JSON.stringify(errorData.extras.result_codes)}`);
+          }
+          logger.error(`Error: ${JSON.stringify(errorData)}`);
+        } else {
+          logger.error(`Error: ${submitError.message}`);
+        }
+        throw submitError;
+      }
 
+      // Save token to database
       const token = await Token.create({
         ...data,
         assetCode,
-        issuer: issuer.publicKey(),
-        distributor: distributor.publicKey(),
-        totalSupply,
+        issuer: issuerPublicKey,
+        distributor: distributorPublicKey,
+        totalSupply: data.totalSupply,
         homeDomain: finalHomeDomain,
       });
 
+      logger.success(`✅ Token saved to database - ID: ${token._id}`);
       return token;
     } catch (err: any) {
-      logger.error("❌ Error in mintToken:", err);
+      logger.error("❌ Error in mintToken");
+      if (err.response?.data) {
+        const errorData = err.response.data;
+        if (errorData.extras?.result_codes) {
+          logger.error(`Result codes: ${JSON.stringify(errorData.extras.result_codes)}`);
+        }
+        logger.error(`Error: ${JSON.stringify(errorData)}`);
+      } else {
+        logger.error(`Error: ${err.message || JSON.stringify(err)}`);
+      }
       throw err;
     }
   }
@@ -189,12 +288,9 @@ class TokenService {
     amount: string;
   }) {
     try {
-      logger.info(`🔹 Burning ${amount} ${assetCode} tokens`);
-
       const holderKeypair = StellarSdk.Keypair.fromSecret(holderSecret);
       const holderPublic = holderKeypair.publicKey();
       const issuerAccount = await server.loadAccount(holderPublic);
-
       const asset = new StellarSdk.Asset(assetCode, issuer);
 
       await this.establishTrustline(
@@ -204,7 +300,6 @@ class TokenService {
       );
 
       const burnAddress ='GAFSXUDWT2P5AOEFD6TGIQSHZ6FEWHNWCS554MZVVUUM3YGI7DB73YWN'
-
       const fee = (await server.fetchBaseFee()).toString();
 
       const tx = new StellarSdk.TransactionBuilder(issuerAccount, {
@@ -222,7 +317,6 @@ class TokenService {
         .build();
 
       tx.sign(holderKeypair);
-
       const result = await server.submitTransaction(tx);
 
       logger.success(`✅ Burned ${amount} ${assetCode}. Transaction hash: ${result.hash}`);

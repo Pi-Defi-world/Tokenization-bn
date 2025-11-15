@@ -16,12 +16,12 @@ export const swaggerDocs = {
     description: 'Pi Blockchain-based DEX API Documentation'
   },
   servers: [
-    { url: 'https://tokenization-backend.onrender.com', description: 'Test Server' }
+    { url: 'http://localhost:8000', description: 'Local Dev Server' }
   ],
   components: {
     securitySchemes: {
       bearerAuth: {
-        type: 'https',
+        type: 'http',
         scheme: 'bearer',
         bearerFormat: 'JWT',
         description: 'Enter your JWT token in the format **Bearer &lt;token&gt;**'
