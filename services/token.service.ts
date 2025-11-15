@@ -366,7 +366,35 @@ class TokenService {
       logger.success(`✅ Token saved to database with ID: ${token._id}`);
       return token;
     } catch (err: any) {
-      logger.error("❌ Error in mintToken:", err);
+      logger.error("❌ Error in mintToken:");
+      logger.error(`   Error message: ${err.message}`);
+      logger.error(`   Error type: ${err.constructor?.name || typeof err}`);
+      
+      // Log full error details if not already logged
+      if (err.response) {
+        logger.error(`   Response status: ${err.response.status}`);
+        logger.error(`   Response data: ${JSON.stringify(err.response.data, null, 2)}`);
+        
+        if (err.response.data?.extras?.result_codes) {
+          logger.error(`   Result codes: ${JSON.stringify(err.response.data.extras.result_codes, null, 2)}`);
+        }
+      }
+      
+      if (err.responseData) {
+        logger.error(`   ResponseData: ${JSON.stringify(err.responseData, null, 2)}`);
+      }
+      
+      if (err.extras) {
+        logger.error(`   Extras: ${JSON.stringify(err.extras, null, 2)}`);
+      }
+      
+      // Try to stringify the entire error
+      try {
+        logger.error(`   Full error: ${JSON.stringify(err, Object.getOwnPropertyNames(err), 2)}`);
+      } catch (stringifyError) {
+        logger.error(`   Could not stringify error: ${stringifyError}`);
+      }
+      
       throw err;
     }
   }
