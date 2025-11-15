@@ -3,10 +3,17 @@ import { server, getAsset } from '../config/stellar';
 import env from '../config/env';
 import { logger } from '../utils/logger';
 import { PoolService } from './liquidity-pools.service';
+import { AccountService } from './account.service';
 
 const poolService = new PoolService();
 
 class SwapService {
+  private accountService: AccountService;
+
+  constructor() {
+    this.accountService = new AccountService();
+  }
+
   private async ensureTrustline(userSecret: string, assetCode: string, issuer?: string) {
     if (assetCode === 'native' || !issuer) return;
 
@@ -152,6 +159,11 @@ class SwapService {
       logger.success(`✅ Swap successful! TX: ${res.hash}`);
       logger.info(`⏱ Duration: ${(Date.now() - start) / 1000}s`);
       logger.info(`----------------------------------------------`);
+
+      // Invalidate balance cache after successful swap (non-blocking)
+      this.accountService.clearBalanceCache(publicKey).catch((err: any) => {
+        logger.warn(`Failed to clear balance cache after swap: ${err?.message || String(err)}`);
+      });
 
       return {
         success: true,
@@ -328,6 +340,11 @@ class SwapService {
       logger.info(`🔹 TX hash: ${res.hash}`);
       logger.info(`⏱ Duration: ${(Date.now() - start) / 1000}s`);
       logger.info('----------------------------------------------');
+
+      // Invalidate balance cache after successful swap (non-blocking)
+      this.accountService.clearBalanceCache(publicKey).catch((err: any) => {
+        logger.warn(`Failed to clear balance cache after swap: ${err?.message || String(err)}`);
+      });
 
       return { hash: res.hash, expectedOutput: outputAmount.toFixed(7) };
     } catch (err: any) {

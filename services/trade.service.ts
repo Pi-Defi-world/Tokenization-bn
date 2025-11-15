@@ -34,13 +34,57 @@ export class TradeService {
         .setTimeout(60)
         .build();
       tx.sign(kp);
-      return server.submitTransaction(tx);
+      const result = await server.submitTransaction(tx);
+      return result;
     } catch (error: any) {
       // Handle account not found error
       if (error?.response?.status === 404 || error?.constructor?.name === 'NotFoundError') {
         logger.error(`Account ${publicKey} not found on Pi network`);
         throw new Error(`Account not found on Pi network. Please ensure your account has been created and funded.`);
       }
+
+      // Handle transaction failure (400 Bad Request)
+      if (error?.response?.status === 400 && error?.response?.data) {
+        const errorData = error.response.data;
+        const resultCodes = errorData.extras?.result_codes;
+        const operationsResultCodes = resultCodes?.operations || [];
+        const transactionResultCode = resultCodes?.transaction || 'unknown';
+
+        // Build detailed error message
+        let errorMessage = 'Transaction failed';
+        
+        if (transactionResultCode === 'tx_failed') {
+          if (operationsResultCodes.length > 0) {
+            const opError = operationsResultCodes[0];
+            if (opError === 'op_no_trust') {
+              errorMessage = 'Trustline not found. You need to establish a trustline for this asset before trading.';
+            } else if (opError === 'op_underfunded') {
+              errorMessage = 'Insufficient balance. You do not have enough of this asset to complete the trade.';
+            } else if (opError === 'op_low_reserve') {
+              errorMessage = 'Insufficient reserve. Your account needs more Test Pi to maintain the minimum reserve.';
+            } else if (opError === 'op_line_full') {
+              errorMessage = 'Trustline limit reached. You have reached the maximum balance for this asset.';
+            } else {
+              errorMessage = `Transaction failed: ${opError}. Please check your balance and trustlines.`;
+            }
+          } else {
+            errorMessage = 'Transaction failed. Please check your balance and account status.';
+          }
+        } else {
+          errorMessage = `Transaction failed: ${transactionResultCode}`;
+        }
+
+        logger.error(`Transaction failed for account ${publicKey}:`, {
+          transactionCode: transactionResultCode,
+          operationsCodes: operationsResultCodes,
+          fullError: errorData,
+        });
+
+        throw new Error(errorMessage);
+      }
+
+      // Re-throw other errors
+      logger.error(`Unexpected error creating sell offer for account ${publicKey}:`, error);
       throw error;
     }
   }
@@ -74,13 +118,57 @@ export class TradeService {
         .setTimeout(60)
         .build();
       tx.sign(kp);
-      return server.submitTransaction(tx);
+      const result = await server.submitTransaction(tx);
+      return result;
     } catch (error: any) {
       // Handle account not found error
       if (error?.response?.status === 404 || error?.constructor?.name === 'NotFoundError') {
         logger.error(`Account ${publicKey} not found on Pi network`);
         throw new Error(`Account not found on Pi network. Please ensure your account has been created and funded.`);
       }
+
+      // Handle transaction failure (400 Bad Request)
+      if (error?.response?.status === 400 && error?.response?.data) {
+        const errorData = error.response.data;
+        const resultCodes = errorData.extras?.result_codes;
+        const operationsResultCodes = resultCodes?.operations || [];
+        const transactionResultCode = resultCodes?.transaction || 'unknown';
+
+        // Build detailed error message
+        let errorMessage = 'Transaction failed';
+        
+        if (transactionResultCode === 'tx_failed') {
+          if (operationsResultCodes.length > 0) {
+            const opError = operationsResultCodes[0];
+            if (opError === 'op_no_trust') {
+              errorMessage = 'Trustline not found. You need to establish a trustline for this asset before trading.';
+            } else if (opError === 'op_underfunded') {
+              errorMessage = 'Insufficient balance. You do not have enough of this asset to complete the trade.';
+            } else if (opError === 'op_low_reserve') {
+              errorMessage = 'Insufficient reserve. Your account needs more Test Pi to maintain the minimum reserve.';
+            } else if (opError === 'op_line_full') {
+              errorMessage = 'Trustline limit reached. You have reached the maximum balance for this asset.';
+            } else {
+              errorMessage = `Transaction failed: ${opError}. Please check your balance and trustlines.`;
+            }
+          } else {
+            errorMessage = 'Transaction failed. Please check your balance and account status.';
+          }
+        } else {
+          errorMessage = `Transaction failed: ${transactionResultCode}`;
+        }
+
+        logger.error(`Transaction failed for account ${publicKey}:`, {
+          transactionCode: transactionResultCode,
+          operationsCodes: operationsResultCodes,
+          fullError: errorData,
+        });
+
+        throw new Error(errorMessage);
+      }
+
+      // Re-throw other errors
+      logger.error(`Unexpected error creating buy offer for account ${publicKey}:`, error);
       throw error;
     }
   }
@@ -113,13 +201,57 @@ export class TradeService {
         .setTimeout(60)
         .build();
       tx.sign(kp);
-      return server.submitTransaction(tx);
+      const result = await server.submitTransaction(tx);
+      return result;
     } catch (error: any) {
       // Handle account not found error
       if (error?.response?.status === 404 || error?.constructor?.name === 'NotFoundError') {
         logger.error(`Account ${publicKey} not found on Pi network`);
         throw new Error(`Account not found on Pi network. Please ensure your account has been created and funded.`);
       }
+
+      // Handle transaction failure (400 Bad Request)
+      if (error?.response?.status === 400 && error?.response?.data) {
+        const errorData = error.response.data;
+        const resultCodes = errorData.extras?.result_codes;
+        const operationsResultCodes = resultCodes?.operations || [];
+        const transactionResultCode = resultCodes?.transaction || 'unknown';
+
+        // Build detailed error message
+        let errorMessage = 'Transaction failed';
+        
+        if (transactionResultCode === 'tx_failed') {
+          if (operationsResultCodes.length > 0) {
+            const opError = operationsResultCodes[0];
+            if (opError === 'op_no_trust') {
+              errorMessage = 'Trustline not found. You need to establish a trustline for this asset before trading.';
+            } else if (opError === 'op_underfunded') {
+              errorMessage = 'Insufficient balance. You do not have enough of this asset to complete the trade.';
+            } else if (opError === 'op_low_reserve') {
+              errorMessage = 'Insufficient reserve. Your account needs more Test Pi to maintain the minimum reserve.';
+            } else if (opError === 'op_line_full') {
+              errorMessage = 'Trustline limit reached. You have reached the maximum balance for this asset.';
+            } else {
+              errorMessage = `Transaction failed: ${opError}. Please check your balance and trustlines.`;
+            }
+          } else {
+            errorMessage = 'Transaction failed. Please check your balance and account status.';
+          }
+        } else {
+          errorMessage = `Transaction failed: ${transactionResultCode}`;
+        }
+
+        logger.error(`Transaction failed for account ${publicKey}:`, {
+          transactionCode: transactionResultCode,
+          operationsCodes: operationsResultCodes,
+          fullError: errorData,
+        });
+
+        throw new Error(errorMessage);
+      }
+
+      // Re-throw other errors
+      logger.error(`Unexpected error canceling offer for account ${publicKey}:`, error);
       throw error;
     }
   }

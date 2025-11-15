@@ -17,8 +17,18 @@ export async function createSellOfferHandler(req: Request, res: Response) {
     const result = await tradeService.createSellOffer(userSecret, sellingAsset, buyingAsset, String(amount), String(price));
     return res.json({ success: true, result });
   } catch (err: any) {
-    console.error("createSellOfferHandler error", err);
-    return res.status(500).json({ success: false, message: err.message || err.toString() });
+    logger.error("createSellOfferHandler error", {
+      message: err?.message || String(err),
+      stack: err?.stack,
+      response: err?.response?.data,
+    });
+    
+    // Return appropriate status code based on error type
+    const statusCode = err?.response?.status === 400 ? 400 : 500;
+    return res.status(statusCode).json({ 
+      success: false, 
+      message: err.message || err.toString() 
+    });
   }
 }
 
@@ -35,8 +45,17 @@ export async function createBuyOfferHandler(req: Request, res: Response) {
     const result = await tradeService.createBuyOffer(userSecret, buyingAsset, sellingAsset, String(buyAmount), String(price));
     return res.json({ success: true, result });
   } catch (err: any) {
-    console.error("createBuyOfferHandler error", err);
-    return res.status(500).json({ success: false, message: err.message || err.toString() });
+    logger.error("createBuyOfferHandler error", {
+      message: err?.message || String(err),
+      stack: err?.stack,
+      response: err?.response?.data,
+    });
+    
+    const statusCode = err?.response?.status === 400 ? 400 : 500;
+    return res.status(statusCode).json({ 
+      success: false, 
+      message: err.message || err.toString() 
+    });
   }
 }
 
@@ -51,7 +70,16 @@ export async function cancelOfferHandler(req: Request, res: Response) {
     const result = await tradeService.cancelSellOffer(userSecret, sellingAsset, buyingAsset, String(offerId));
     return res.json({ success: true, result });
   } catch (err: any) {
-    console.error("cancelOfferHandler error", err);
-    return res.status(500).json({ success: false, message: err.message || err.toString() });
+    logger.error("cancelOfferHandler error", {
+      message: err?.message || String(err),
+      stack: err?.stack,
+      response: err?.response?.data,
+    });
+    
+    const statusCode = err?.response?.status === 400 ? 400 : 500;
+    return res.status(statusCode).json({ 
+      success: false, 
+      message: err.message || err.toString() 
+    });
   }
 }

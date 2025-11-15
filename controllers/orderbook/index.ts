@@ -15,7 +15,7 @@ export async function getOrderBookHandler(req: Request, res: Response) {
     if (counterStr !== "native" && !counterStr.includes(":")) {
       return res.status(400).json({ 
         success: false, 
-        message: "Counter asset must be 'native' or in 'CODE:ISSUER' format (e.g., Archimedes:GBP7HXY4QXLKZBKIUR75Y6I3OHB2CQLAUA2FV2LCNDRPP54TZLNBSENX)" 
+        message: "Counter asset must be 'native' or in 'CODE:ISSUER'"
       });
     }
 

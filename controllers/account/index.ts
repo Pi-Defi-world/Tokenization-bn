@@ -37,10 +37,19 @@ export const getAccountBalance = async (req: Request, res: Response) => {
         return res.status(400).json({ message: 'publicKey is required' });
       }
 
-      // Check if client wants to bypass cache
+      // Check if client wants to bypass cache or force refresh
       const useCache = req.query.cache !== 'false';
+      const forceRefresh = req.query.refresh === 'true';
 
-      const result = await accountService.getBalances(publicKey, useCache);
+      const result = await accountService.getBalances(publicKey, useCache, forceRefresh);
+      
+      // If using cached data, trigger background refresh for next time
+      if (result.cached && !forceRefresh) {
+        // Non-blocking background refresh
+        accountService.refreshBalancesInBackground(publicKey).catch(() => {
+          // Silently fail background refresh
+        });
+      }
       
       // Return 200 with the result (even if balances are empty)
       // The service handles "account not found" by returning empty balances

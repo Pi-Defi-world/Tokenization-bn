@@ -1,6 +1,7 @@
 import { server } from '../config/stellar';
 import { getKeypairFromMnemonic, getKeypairFromSecret } from '../utils/keypair';
 import User from '../models/User';
+import BalanceCache from '../models/BalanceCache';
 import { logger } from '../utils/logger';
 
 export interface ImportAccountInput {
@@ -23,14 +24,10 @@ export interface OperationsQuery {
   order?: 'asc' | 'desc';
 }
 
-// Simple in-memory cache for balances
-interface BalanceCacheEntry {
-  balances: any[];
-  timestamp: number;
-}
-
-const balanceCache = new Map<string, BalanceCacheEntry>();
-const CACHE_TTL = 30000; // 30 seconds
+// Cache configuration
+const CACHE_TTL_MS = 60000; // 1 minute for successful fetches
+const CACHE_TTL_NOT_FOUND_MS = 300000; // 5 minutes for "not found" accounts (to reduce API calls)
+const CACHE_TTL_ERROR_MS = 10000; // 10 seconds for errors (retry sooner)
 
 export class AccountService {
   public async importAccount(input: ImportAccountInput) {
@@ -75,27 +72,43 @@ export class AccountService {
     return { publicKey, secret: secretKey };
   }
 
-  public async getBalances(publicKey: string, useCache: boolean = true) {
+  public async getBalances(publicKey: string, useCache: boolean = true, forceRefresh: boolean = false) {
     if (!publicKey) {
       throw new Error('publicKey is required');
     }
 
-    // Check cache first
-    if (useCache) {
-      const cached = balanceCache.get(publicKey);
-      if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-        logger.info(`Using cached balances for account ${publicKey}`);
-        return { publicKey, balances: cached.balances };
+    // Check database cache first (unless forcing refresh)
+    if (useCache && !forceRefresh) {
+      try {
+        const cached = await BalanceCache.findOne({ 
+          publicKey,
+          expiresAt: { $gt: new Date() } // Not expired
+        });
+
+        if (cached) {
+          logger.info(`Using cached balances for account ${publicKey} (from DB, expires: ${cached.expiresAt.toISOString()})`);
+          return { 
+            publicKey, 
+            balances: cached.balances,
+            cached: true,
+            accountExists: cached.accountExists 
+          };
+        }
+      } catch (dbError) {
+        logger.warn(`Error reading from balance cache DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+        // Continue to fetch from network if DB read fails
       }
     }
 
-    // Retry logic for transient errors
-    const maxRetries = 3;
+    // Fetch from network with retry logic
+    const maxRetries = 2; // Reduced retries for scalability
     let lastError: any = null;
+    let accountExists = true;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const account = await server.loadAccount(publicKey);
+        accountExists = true;
 
         const THRESHOLD = 0.1;
 
@@ -127,31 +140,31 @@ export class AccountService {
             return entry.amount > THRESHOLD;
           });
 
-        // Cache successful result
+        // Save to database cache
         if (useCache) {
-          balanceCache.set(publicKey, {
-            balances,
-            timestamp: Date.now(),
-          });
+          try {
+            const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
+            await BalanceCache.findOneAndUpdate(
+              { publicKey },
+              {
+                publicKey,
+                balances,
+                accountExists: true,
+                lastFetched: new Date(),
+                expiresAt,
+              },
+              { upsert: true, new: true }
+            );
+          } catch (dbError) {
+            logger.warn(`Failed to save balance cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+            // Continue even if DB save fails
+          }
         }
 
-        logger.info(`Successfully fetched balances for account ${publicKey} (${balances.length} assets)`);
-        return { publicKey, balances };
+        logger.info(`✅ Successfully fetched balances for account ${publicKey} (${balances.length} assets)`);
+        return { publicKey, balances, cached: false, accountExists: true };
       } catch (error: any) {
         lastError = error;
-
-        // Log the actual error for debugging (only on first attempt or final attempt)
-        if (attempt === 1 || attempt === maxRetries) {
-          const errorDetails = {
-            message: error?.message || String(error),
-            status: error?.response?.status,
-            statusText: error?.response?.statusText,
-            errorType: error?.constructor?.name,
-            responseData: error?.response?.data,
-            attempt,
-          };
-          logger.error(`Error fetching balances for account ${publicKey} (attempt ${attempt}/${maxRetries}):`, errorDetails);
-        }
 
         // Check if it's a "not found" error
         const isNotFoundError =
@@ -164,22 +177,48 @@ export class AccountService {
             error.message === 'Not Found'
           ));
 
-        // If account not found, don't retry - return empty balances
+        // If account not found, don't retry - cache and return empty balances
         if (isNotFoundError) {
-          logger.info(`Account ${publicKey} not found on Pi network (attempt ${attempt}), returning empty balances`);
-          // Cache empty balances too (shorter TTL would be better, but keeping it simple)
+          accountExists = false;
+          logger.info(`Account ${publicKey} not found on Pi network (attempt ${attempt})`);
+
+          // Cache "not found" status with longer TTL to reduce API calls
           if (useCache) {
-            balanceCache.set(publicKey, {
-              balances: [],
-              timestamp: Date.now(),
-            });
+            try {
+              const expiresAt = new Date(Date.now() + CACHE_TTL_NOT_FOUND_MS);
+              await BalanceCache.findOneAndUpdate(
+                { publicKey },
+                {
+                  publicKey,
+                  balances: [],
+                  accountExists: false,
+                  lastFetched: new Date(),
+                  expiresAt,
+                },
+                { upsert: true, new: true }
+              );
+            } catch (dbError) {
+              logger.warn(`Failed to save "not found" cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+            }
           }
-          return { publicKey, balances: [] };
+
+          return { publicKey, balances: [], cached: false, accountExists: false };
         }
 
-        // For other errors, retry with exponential backoff
+        // Log error only on first attempt
+        if (attempt === 1) {
+          const errorDetails = {
+            message: error?.message || String(error),
+            status: error?.response?.status,
+            errorType: error?.constructor?.name,
+            attempt,
+          };
+          logger.error(`Error fetching balances for account ${publicKey} (attempt ${attempt}/${maxRetries}):`, errorDetails);
+        }
+
+        // For other errors, retry with exponential backoff (only once)
         if (attempt < maxRetries) {
-          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000); // Max 5 seconds
+          const delay = Math.min(1000 * attempt, 3000); // Max 3 seconds
           logger.warn(`Retrying balance fetch for ${publicKey} in ${delay}ms (attempt ${attempt}/${maxRetries})`);
           await new Promise(resolve => setTimeout(resolve, delay));
           continue;
@@ -187,8 +226,27 @@ export class AccountService {
       }
     }
 
-    // All retries failed
-    logger.error(`Failed to fetch balances for account ${publicKey} after ${maxRetries} attempts:`, lastError);
+    // All retries failed - cache error with short TTL
+    if (useCache) {
+      try {
+        const expiresAt = new Date(Date.now() + CACHE_TTL_ERROR_MS);
+        await BalanceCache.findOneAndUpdate(
+          { publicKey },
+          {
+            publicKey,
+            balances: [],
+            accountExists: false, // Assume doesn't exist on error
+            lastFetched: new Date(),
+            expiresAt,
+          },
+          { upsert: true, new: true }
+        );
+      } catch (dbError) {
+        logger.warn(`Failed to save error cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+      }
+    }
+
+    logger.error(`❌ Failed to fetch balances for account ${publicKey} after ${maxRetries} attempts:`, lastError);
     throw lastError;
   }
 
@@ -301,15 +359,44 @@ export class AccountService {
   }
 
   // Clear cache for a specific account (useful after transactions)
-  public clearBalanceCache(publicKey: string) {
-    balanceCache.delete(publicKey);
-    logger.info(`Cleared balance cache for account ${publicKey}`);
+  public async clearBalanceCache(publicKey: string) {
+    try {
+      await BalanceCache.deleteOne({ publicKey });
+      logger.info(`Cleared balance cache for account ${publicKey}`);
+    } catch (error) {
+      logger.error(`Failed to clear balance cache for ${publicKey}:`, error);
+    }
   }
 
-  // Clear all cached balances
-  public clearAllBalanceCache() {
-    balanceCache.clear();
-    logger.info('Cleared all balance cache');
+  // Clear all cached balances (use with caution)
+  public async clearAllBalanceCache() {
+    try {
+      const result = await BalanceCache.deleteMany({});
+      logger.info(`Cleared ${result.deletedCount} balance cache entries`);
+    } catch (error) {
+      logger.error('Failed to clear all balance cache:', error);
+    }
+  }
+
+  // Background refresh for a specific account (non-blocking)
+  public async refreshBalancesInBackground(publicKey: string) {
+    // Don't await - let it run in background
+    this.getBalances(publicKey, true, true).catch((error) => {
+      logger.warn(`Background balance refresh failed for ${publicKey}: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+
+  // Batch refresh multiple accounts (for background jobs)
+  public async refreshBalancesBatch(publicKeys: string[], concurrency: number = 5) {
+    const results = [];
+    for (let i = 0; i < publicKeys.length; i += concurrency) {
+      const batch = publicKeys.slice(i, i + concurrency);
+      const batchResults = await Promise.allSettled(
+        batch.map(pk => this.getBalances(pk, true, true))
+      );
+      results.push(...batchResults);
+    }
+    return results;
   }
 }
 
