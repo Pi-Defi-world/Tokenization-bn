@@ -152,18 +152,38 @@ class TokenService {
         }
       }
 
+      logger.info(`🔹 Loading issuer account: ${issuer.publicKey()}`);
       const issuerAccount = await server.loadAccount(issuer.publicKey());
+      logger.info(`✅ Issuer account loaded successfully`);
+      
       const asset = getAsset(assetCode, issuer.publicKey());
 
       const distributor = StellarSdk.Keypair.fromSecret(distributorSecret);
-      logger.info(`💳 Distributor loaded: ${distributor.publicKey()}`);
+      const distributorPublicKey = distributor.publicKey();
+      logger.info(`💳 Distributor keypair created: ${distributorPublicKey}`);
 
+      // Check if distributor account exists before establishing trustline
+      try {
+        logger.info(`🔹 Checking if distributor account exists: ${distributorPublicKey}`);
+        await server.loadAccount(distributorPublicKey);
+        logger.info(`✅ Distributor account exists`);
+      } catch (accountError: any) {
+        logger.error(`❌ Distributor account not found: ${distributorPublicKey}`);
+        logger.error(`   Error: ${accountError.message || JSON.stringify(accountError)}`);
+        throw new Error(
+          `Distributor account ${distributorPublicKey} does not exist on Stellar network. ` +
+          `The account must be created and funded before minting tokens.`
+        );
+      }
+
+      logger.info(`🔹 Establishing trustline for distributor...`);
       await this.establishTrustline(
         distributorSecret,
         assetCode,
         issuer.publicKey()
       );
 
+      logger.info(`🔹 Creating payment transaction: ${totalSupply} ${assetCode} to ${distributorPublicKey}`);
       const fee = (await server.fetchBaseFee()).toString();
 
       const tx = new StellarSdk.TransactionBuilder(issuerAccount, {
@@ -172,7 +192,7 @@ class TokenService {
       })
         .addOperation(
           StellarSdk.Operation.payment({
-            destination: distributor.publicKey(),
+            destination: distributorPublicKey,
             asset,
             amount: totalSupply,
           })
@@ -181,20 +201,23 @@ class TokenService {
         .build();
 
       tx.sign(issuer);
+      logger.info(`🔹 Transaction signed, submitting...`);
 
       const result = await server.submitTransaction(tx);
       logger.success("🚀 Token minted successfully");
       logger.info(`Transaction hash: ${result.hash}`);
 
+      logger.info(`🔹 Saving token to database...`);
       const token = await Token.create({
         ...data,
         assetCode,
         issuer: issuer.publicKey(),
-        distributor: distributor.publicKey(),
+        distributor: distributorPublicKey,
         totalSupply: data.totalSupply,
         homeDomain: finalHomeDomain,
       });
 
+      logger.success(`✅ Token saved to database with ID: ${token._id}`);
       return token;
     } catch (err: any) {
       logger.error("❌ Error in mintToken:", err);
