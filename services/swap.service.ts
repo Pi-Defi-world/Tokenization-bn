@@ -177,8 +177,16 @@ class SwapService {
         totalFetched += result.records.length;
 
         for (const pool of result.records) {
-          const assets = pool.reserves.map((r: any) => r.asset.split(':')[0]);
-          if (assets.includes(tokenA) && assets.includes(tokenB)) {
+          const assets = pool.reserves.map((r: any) => {
+            const assetStr = r.asset || "";
+            if (assetStr === "native") return "native";
+            return assetStr.split(':')[0];
+          });
+          // Case-insensitive comparison
+          const tokenAUpper = tokenA === "native" ? "native" : tokenA.toUpperCase();
+          const tokenBUpper = tokenB === "native" ? "native" : tokenB.toUpperCase();
+          const assetsUpper = assets.map(a => a === "native" ? "native" : a.toUpperCase());
+          if (assetsUpper.includes(tokenAUpper) && assetsUpper.includes(tokenBUpper)) {
             matchedPools.push(pool);
           }
         }
@@ -256,8 +264,16 @@ class SwapService {
       logger.info(`🔹 Searching liquidity pool for ${from.code} & ${to.code}`);
       const allPools = await poolService.getLiquidityPools(50);
       const match = allPools.records.find((p: any) => {
-        const assets = p.reserves.map((r: any) => r.asset.split(':')[0]);
-        return assets.includes(from.code) && assets.includes(to.code);
+        const assets = p.reserves.map((r: any) => {
+          const assetStr = r.asset || "";
+          if (assetStr === "native") return "native";
+          return assetStr.split(':')[0];
+        });
+        // Case-insensitive comparison
+        const fromCodeUpper = from.code === "native" ? "native" : from.code.toUpperCase();
+        const toCodeUpper = to.code === "native" ? "native" : to.code.toUpperCase();
+        const assetsUpper = assets.map(a => a === "native" ? "native" : a.toUpperCase());
+        return assetsUpper.includes(fromCodeUpper) && assetsUpper.includes(toCodeUpper);
       });
 
       if (!match) throw new Error(`No pool found for ${from.code}/${to.code}`);
