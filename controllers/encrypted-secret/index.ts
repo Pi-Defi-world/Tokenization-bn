@@ -14,7 +14,7 @@ export const storeEncryptedSecret = async (req: Request, res: Response) => {
     const currentUser = (req as any).currentUser;
     const { publicKey, encryptedSecret, iv, salt } = req.body || {};
 
-    logger.info('📥 Request body:', {
+    logger.info(`📥 Request body: ${JSON.stringify({
       hasPublicKey: !!publicKey,
       hasEncryptedSecret: !!encryptedSecret,
       hasIv: !!iv,
@@ -23,7 +23,7 @@ export const storeEncryptedSecret = async (req: Request, res: Response) => {
       encryptedSecretLength: encryptedSecret?.length,
       ivLength: iv?.length,
       saltLength: salt?.length,
-    });
+    })}`);
 
     if (!currentUser) {
       logger.warn('❌ Not authenticated');
