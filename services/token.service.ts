@@ -173,11 +173,16 @@ class TokenService {
               logger.error(`   Response status: ${accountError.response.status}`);
               logger.error(`   Response data: ${JSON.stringify(accountError.response.data, null, 2)}`);
             }
+            // Log the full error details for debugging
+            const errorDetails = accountError.response?.data 
+              ? JSON.stringify(accountError.response.data, null, 2)
+              : accountError.message;
+            
             throw new Error(
-              `Failed to load issuer account ${issuerPublicKey} from Pi Network Horizon API. ` +
-              `The account exists on Pi Explorer but the Horizon API returned "Not Found". ` +
-              `This might be a temporary API issue. Please try again in a few moments. ` +
-              `Horizon URL: ${env.HORIZON_URL}`
+              `Failed to load issuer account ${issuerPublicKey} from Horizon API after ${maxRetries} attempts. ` +
+              `Error: ${accountError.message}. ` +
+              `Horizon URL: ${env.HORIZON_URL}. ` +
+              `Check logs for full error details. Possible causes: API sync delay, network issue, or incorrect Horizon URL.`
             );
           }
         }
@@ -192,9 +197,25 @@ class TokenService {
             homeDomainWasSet = true;
             logger.info(`🔹 Home domain was updated, reloading issuer account to get new sequence...`);
             // Reload account to get updated sequence number after home domain change
-            await new Promise(resolve => setTimeout(resolve, 1000)); // Small delay for ledger propagation
-            issuerAccount = await server.loadAccount(issuerPublicKey);
-            logger.info(`✅ Issuer account reloaded with new sequence: ${issuerAccount.sequenceNumber()}`);
+            await new Promise(resolve => setTimeout(resolve, 2000)); // Delay for ledger propagation
+            
+            // Retry reloading the account
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+              try {
+                if (attempt > 1) {
+                  logger.info(`   Reload retry attempt ${attempt}/${maxRetries}...`);
+                  await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+                }
+                issuerAccount = await server.loadAccount(issuerPublicKey);
+                logger.info(`✅ Issuer account reloaded with new sequence: ${issuerAccount.sequenceNumber()}`);
+                break;
+              } catch (reloadError: any) {
+                if (attempt === maxRetries) {
+                  logger.warn(`⚠️ Failed to reload issuer account after home domain update, using original account`);
+                  // Continue with original account - sequence might still work
+                }
+              }
+            }
           }
         } catch (homeDomainError: any) {
           logger.warn(
@@ -210,19 +231,42 @@ class TokenService {
       const distributorPublicKey = distributor.publicKey();
       logger.info(`💳 Distributor keypair created: ${distributorPublicKey}`);
 
-       
-      try {
-        logger.info(`🔹 Checking if distributor account exists: ${distributorPublicKey}`);
-        await server.loadAccount(distributorPublicKey);
-        logger.info(`✅ Distributor account exists`);
-      } catch (accountError: any) {
-        logger.error(`❌ Distributor account not found: ${distributorPublicKey}`);
-        logger.error(`   Error: ${accountError.message || JSON.stringify(accountError)}`);
-        throw new Error(
-          `Distributor account ${distributorPublicKey} does not exist on Pi Network. ` +
-          `The account must be created and funded with Pi coins before minting tokens. ` +
-          `Please ensure the account exists and has been activated on the Pi Network.`
-        );
+      // Check if distributor account exists with retry logic
+      logger.info(`🔹 Checking if distributor account exists: ${distributorPublicKey}`);
+      let distributorAccount;
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          if (attempt > 1) {
+            logger.info(`   Retry attempt ${attempt}/${maxRetries}...`);
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
+          }
+          distributorAccount = await server.loadAccount(distributorPublicKey);
+          logger.info(`✅ Distributor account exists`);
+          logger.info(`   Account sequence: ${distributorAccount.sequenceNumber()}`);
+          break; // Success, exit retry loop
+        } catch (accountError: any) {
+          if (attempt === maxRetries) {
+            logger.error(`❌ Distributor account not found after ${maxRetries} attempts: ${distributorPublicKey}`);
+            logger.error(`   Error: ${accountError.message || JSON.stringify(accountError)}`);
+            if (accountError.response) {
+              logger.error(`   Response status: ${accountError.response.status}`);
+              logger.error(`   Response data: ${JSON.stringify(accountError.response.data, null, 2)}`);
+            }
+            // Log the full error details for debugging
+            const errorDetails = accountError.response?.data 
+              ? JSON.stringify(accountError.response.data, null, 2)
+              : accountError.message;
+            
+            throw new Error(
+              `Failed to load distributor account ${distributorPublicKey} from Horizon API after ${maxRetries} attempts. ` +
+              `Error: ${accountError.message}. ` +
+              `Horizon URL: ${env.HORIZON_URL}. ` +
+              `Check logs for full error details. Possible causes: API sync delay, network issue, or incorrect Horizon URL.`
+            );
+          } else {
+            logger.warn(`   Attempt ${attempt} failed: ${accountError.message}`);
+          }
+        }
       }
 
       logger.info(`🔹 Establishing trustline for distributor...`);
