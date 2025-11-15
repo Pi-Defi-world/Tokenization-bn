@@ -2,8 +2,31 @@ import StellarSdk from '@stellar/stellar-sdk';
 import env from './env';
 import { logger } from '../utils/logger';
 
-
+// Primary server (default - Pi Network)
 export const server = new StellarSdk.Horizon.Server(env.HORIZON_URL);
+
+// Secondary server (fallback - Pi Network testnet)
+export const serverFallback = new StellarSdk.Horizon.Server(
+  env.horizon?.pi?.testnet || 'https://api.testnet.minepi.com'
+);
+
+// Helper function to get all available Horizon servers for balance checks
+export const getBalanceCheckServers = (): StellarSdk.Horizon.Server[] => {
+  const servers: StellarSdk.Horizon.Server[] = [];
+  
+  // Primary: Current configured Horizon URL
+  servers.push(server);
+  
+  // Fallback: Pi Network testnet (if different from primary)
+  const primaryUrl = env.HORIZON_URL;
+  const fallbackUrl = env.horizon?.pi?.testnet || 'https://api.testnet.minepi.com';
+  
+  if (primaryUrl !== fallbackUrl) {
+    servers.push(serverFallback);
+  }
+  
+  return servers;
+};
 
 export const getKeypairFromSecret = (secret: string) => {
   const keypair = StellarSdk.Keypair.fromSecret(secret);

@@ -44,8 +44,9 @@ export const getAccountBalance = async (req: Request, res: Response) => {
       const result = await accountService.getBalances(publicKey, useCache, forceRefresh);
       
       // If using cached data, trigger background refresh for next time
-      if (result.cached && !forceRefresh) {
-        // Non-blocking background refresh
+      // BUT: Don't refresh if account is known to not exist (to avoid unnecessary API calls)
+      if (result.cached && !forceRefresh && result.accountExists !== false) {
+        // Non-blocking background refresh (only for accounts that exist)
         accountService.refreshBalancesInBackground(publicKey).catch(() => {
           // Silently fail background refresh
         });
