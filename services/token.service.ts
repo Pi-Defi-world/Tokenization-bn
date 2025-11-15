@@ -59,22 +59,48 @@ class TokenService {
       throw err;
     }
   }
+ 
+  private extractDomain(homeDomain: string): string {
+    try {
+      // If it's already just a domain, return as is
+      if (!homeDomain.includes('://') && !homeDomain.includes('/')) {
+        return homeDomain;
+      }
+      
+      // Extract domain from URL
+      const url = new URL(homeDomain.startsWith('http') ? homeDomain : `https://${homeDomain}`);
+      return url.hostname;
+    } catch {
+      // If URL parsing fails, try to extract domain manually
+      const match = homeDomain.match(/(?:https?:\/\/)?([^\/]+)/);
+      return match ? match[1] : homeDomain;
+    }
+  }
 
   async setHomeDomain(issuerSecret: string, homeDomain: string) {
     try {
       const issuer = StellarSdk.Keypair.fromSecret(issuerSecret);
-      logger.info(
-        `🔹 Setting home domain "${homeDomain}" for issuer: ${issuer.publicKey()}`
-      );
-      const issuerAccount = await server.loadAccount(issuer.publicKey());
-      const fee = (await server.fetchBaseFee()).toString();
+      const domain = this.extractDomain(homeDomain);
       
+      logger.info(
+        `🔹 Setting home domain "${domain}" for issuer: ${issuer.publicKey()}`
+      );
+      
+      const issuerAccount = await server.loadAccount(issuer.publicKey());
+      
+      // Check if home domain is already set to the same value
+      if (issuerAccount.home_domain === domain) {
+        logger.info(`ℹ️ Home domain already set to "${domain}"`);
+        return { hash: 'no-op' };
+      }
+      
+      const fee = (await server.fetchBaseFee()).toString();
 
       const tx = new StellarSdk.TransactionBuilder(issuerAccount, {
         fee,
         networkPassphrase: env.NETWORK,
       })
-        .addOperation(StellarSdk.Operation.setOptions({ homeDomain }))
+        .addOperation(StellarSdk.Operation.setOptions({ homeDomain: domain }))
         .setTimeout(60)
         .build();
 
@@ -82,7 +108,7 @@ class TokenService {
       const result = await server.submitTransaction(tx);
 
       logger.success(
-        `✅ Home domain "${homeDomain}" set successfully for issuer: ${issuer.publicKey()}`
+        `✅ Home domain "${domain}" set successfully for issuer: ${issuer.publicKey()}`
       );
       return result;
     } catch (err: any) {
@@ -113,8 +139,17 @@ class TokenService {
       const finalHomeDomain =
         homeDomain || `https://www.zyrapay.net/${assetCode}`;
 
+      // Try to set home domain, but don't fail the entire mint if it fails
+      // Home domain is optional and can be set later
       if (finalHomeDomain) {
-        await this.setHomeDomain(env.PLATFORM_ISSUER_SECRET, finalHomeDomain);
+        try {
+          await this.setHomeDomain(env.PLATFORM_ISSUER_SECRET, finalHomeDomain);
+        } catch (homeDomainError: any) {
+          logger.warn(
+            `⚠️ Failed to set home domain, continuing with mint: ${homeDomainError.message}`
+          );
+          // Continue with mint even if home domain setting fails
+        }
       }
 
       const issuerAccount = await server.loadAccount(issuer.publicKey());
