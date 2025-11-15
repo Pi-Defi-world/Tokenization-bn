@@ -315,6 +315,19 @@ class TokenService {
 
       let result;
       try {
+        // Try to simulate the transaction first to catch errors early
+        try {
+          const simulation = await server.simulateTransaction(tx);
+          logger.info(`🔹 Transaction simulation successful`);
+          logger.info(`   Fee charged: ${simulation.feeCharged}`);
+          if (simulation.results && simulation.results.length > 0) {
+            logger.info(`   Results: ${JSON.stringify(simulation.results, null, 2)}`);
+          }
+        } catch (simError: any) {
+          logger.warn(`⚠️ Transaction simulation failed: ${simError.message}`);
+          // Continue anyway - simulation might not be available
+        }
+        
         result = await server.submitTransaction(tx);
         logger.success("🚀 Token minted successfully");
         logger.info(`Transaction hash: ${result.hash}`);
@@ -322,33 +335,98 @@ class TokenService {
         logger.error(`❌ Transaction submission failed`);
         logger.error(`   Error type: ${submitError.constructor.name}`);
         logger.error(`   Error message: ${submitError.message}`);
-        logger.error(`   Full error object: ${JSON.stringify(submitError, Object.getOwnPropertyNames(submitError), 2)}`);
         
-        // Log detailed Stellar error if available - check multiple possible structures
+        // Try multiple ways to access error details
+        // Method 1: Standard response.data
         if (submitError.response) {
           logger.error(`   Response status: ${submitError.response.status}`);
-          logger.error(`   Response data: ${JSON.stringify(submitError.response.data, null, 2)}`);
+          logger.error(`   Response statusText: ${submitError.response.statusText || 'N/A'}`);
           
-          if (submitError.response.data?.extras?.result_codes) {
-            logger.error(`   Result codes: ${JSON.stringify(submitError.response.data.extras.result_codes, null, 2)}`);
-          }
-          
-          if (submitError.response.data?.extras?.result_xdr) {
-            logger.error(`   Result XDR: ${submitError.response.data.extras.result_xdr}`);
+          // Try to get response data
+          if (submitError.response.data) {
+            logger.error(`   Response data: ${JSON.stringify(submitError.response.data, null, 2)}`);
+            
+            if (submitError.response.data.extras) {
+              logger.error(`   Extras: ${JSON.stringify(submitError.response.data.extras, null, 2)}`);
+              
+              if (submitError.response.data.extras.result_codes) {
+                logger.error(`   Result codes: ${JSON.stringify(submitError.response.data.extras.result_codes, null, 2)}`);
+              }
+              
+              if (submitError.response.data.extras.result_xdr) {
+                logger.error(`   Result XDR: ${submitError.response.data.extras.result_xdr}`);
+              }
+            }
+          } else {
+            logger.error(`   Response data is undefined`);
+            // Try to access the response object more deeply
+            if (submitError.response._bodyInit) {
+              logger.error(`   Response has _bodyInit property`);
+            }
+            if (submitError.response._bodyText) {
+              logger.error(`   Response body text: ${submitError.response._bodyText}`);
+            }
           }
         }
         
-        // Check for Stellar SDK specific error properties
+        // Method 2: Check for responseData property
         if (submitError.responseData) {
           logger.error(`   ResponseData: ${JSON.stringify(submitError.responseData, null, 2)}`);
         }
         
+        // Method 3: Check for extras property directly
         if (submitError.extras) {
-          logger.error(`   Extras: ${JSON.stringify(submitError.extras, null, 2)}`);
+          logger.error(`   Extras (direct): ${JSON.stringify(submitError.extras, null, 2)}`);
         }
         
-        // Log the entire error to see its structure
+        // Method 4: Try to get result codes from various locations
+        const resultCodes = 
+          submitError.response?.data?.extras?.result_codes ||
+          submitError.extras?.result_codes ||
+          submitError.responseData?.extras?.result_codes;
+        
+        if (resultCodes) {
+          logger.error(`   Result codes (found): ${JSON.stringify(resultCodes, null, 2)}`);
+        }
+        
+        // Method 5: Log all enumerable properties
         logger.error(`   Error keys: ${Object.keys(submitError).join(', ')}`);
+        
+        // Method 6: Try to stringify the entire error with all properties
+        try {
+          const errorProps = Object.getOwnPropertyNames(submitError);
+          const errorObj: any = {};
+          for (const prop of errorProps) {
+            try {
+              const value = submitError[prop];
+              // Skip functions and circular references
+              if (typeof value !== 'function' && prop !== 'stack') {
+                errorObj[prop] = value;
+              }
+            } catch (e) {
+              errorObj[prop] = '[Cannot access]';
+            }
+          }
+          logger.error(`   Full error object: ${JSON.stringify(errorObj, null, 2)}`);
+        } catch (stringifyError) {
+          logger.error(`   Could not stringify full error: ${stringifyError}`);
+        }
+        
+        // Method 7: Check if there's a way to get the transaction result from XDR
+        const resultXdr = 
+          submitError.response?.data?.extras?.result_xdr ||
+          submitError.extras?.result_xdr ||
+          submitError.responseData?.extras?.result_xdr;
+        
+        if (resultXdr) {
+          logger.error(`   Result XDR found: ${resultXdr}`);
+          try {
+            const parsedResult = StellarSdk.xdr.TransactionResult.fromXDR(resultXdr, 'base64');
+            logger.error(`   Parsed result XDR: ${JSON.stringify(parsedResult, null, 2)}`);
+          } catch (xdrError: any) {
+            logger.error(`   Could not parse result XDR: ${xdrError.message}`);
+          }
+        }
         
         throw submitError;
       }
