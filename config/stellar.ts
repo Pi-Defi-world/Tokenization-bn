@@ -11,8 +11,8 @@ export const serverFallback = new StellarSdk.Horizon.Server(
 );
 
 // Helper function to get all available Horizon servers for balance checks
-export const getBalanceCheckServers = (): StellarSdk.Horizon.Server[] => {
-  const servers: StellarSdk.Horizon.Server[] = [];
+export const getBalanceCheckServers = () => {
+  const servers: (typeof server)[] = [];
   
   // Primary: Current configured Horizon URL
   servers.push(server);
