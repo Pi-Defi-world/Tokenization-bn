@@ -276,6 +276,12 @@ class TokenService {
         issuer.publicKey()
       );
 
+      // Reload issuer account right before building payment transaction
+      // This ensures we have the latest sequence number after any previous operations
+      logger.info(`🔹 Reloading issuer account before payment transaction...`);
+      issuerAccount = await server.loadAccount(issuerPublicKey);
+      logger.info(`   Issuer account sequence: ${issuerAccount.sequenceNumber()}`);
+
       logger.info(`🔹 Creating payment transaction: ${totalSupply} ${assetCode} to ${distributorPublicKey}`);
       logger.info(`   Asset: ${asset.getCode()} issued by ${asset.getIssuer()}`);
       logger.info(`   Issuer account flags: ${JSON.stringify({
