@@ -156,7 +156,7 @@ class TokenService {
         assetCode,
         issuer: issuer.publicKey(),
         distributor: distributor.publicKey(),
-        totalSupply,
+        totalSupply: data.totalSupply,
         homeDomain: finalHomeDomain,
       });
 

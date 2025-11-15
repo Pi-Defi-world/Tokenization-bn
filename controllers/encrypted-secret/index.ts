@@ -14,7 +14,16 @@ export const storeEncryptedSecret = async (req: Request, res: Response) => {
     const currentUser = (req as any).currentUser;
     const { publicKey, encryptedSecret, iv, salt } = req.body || {};
 
-    logger.info(`📥 Request body: hasPublicKey=${!!publicKey}, hasEncryptedSecret=${!!encryptedSecret}, hasIv=${!!iv}, hasSalt=${!!salt}, publicKey=${publicKey?.substring(0, 10) + '...'}, encryptedSecretLength=${encryptedSecret?.length}, ivLength=${iv?.length}, saltLength=${salt?.length}`);
+    logger.info('📥 Request body:', {
+      hasPublicKey: !!publicKey,
+      hasEncryptedSecret: !!encryptedSecret,
+      hasIv: !!iv,
+      hasSalt: !!salt,
+      publicKey: publicKey?.substring(0, 10) + '...',
+      encryptedSecretLength: encryptedSecret?.length,
+      ivLength: iv?.length,
+      saltLength: salt?.length,
+    });
 
     if (!currentUser) {
       logger.warn('❌ Not authenticated');
