@@ -10,8 +10,17 @@ export async function getOrderBookHandler(req: Request, res: Response) {
     const { base, counter } = req.query;
     if (!base || !counter) return res.status(400).json({ success: false, message: "base and counter are required" });
 
+    // Validate counter asset format - must be "native" or "CODE:ISSUER"
+    const counterStr = String(counter).trim();
+    if (counterStr !== "native" && !counterStr.includes(":")) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Counter asset must be 'native' or in 'CODE:ISSUER' format (e.g., Archimedes:GBP7HXY4QXLKZBKIUR75Y6I3OHB2CQLAUA2FV2LCNDRPP54TZLNBSENX)" 
+      });
+    }
+
     const baseAsset = getAssetFromCodeIssuer(String(base));
-    const counterAsset = getAssetFromCodeIssuer(String(counter));
+    const counterAsset = getAssetFromCodeIssuer(counterStr);
 
     const book = await orderBookService.getOrderBook(baseAsset, counterAsset);
     return res.json({ success: true, book });
@@ -41,8 +50,17 @@ export async function getTradesHandler(req: Request, res: Response) {
       return res.status(400).json({ success: false, message: "base and counter are required" });
     }
 
+    // Validate counter asset format - must be "native" or "CODE:ISSUER"
+    const counterStr = String(counter).trim();
+    if (counterStr !== "native" && !counterStr.includes(":")) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Counter asset must be 'native' or in 'CODE:ISSUER' format (e.g., Archimedes:GBP7HXY4QXLKZBKIUR75Y6I3OHB2CQLAUA2FV2LCNDRPP54TZLNBSENX)" 
+      });
+    }
+
     const baseAsset = getAssetFromCodeIssuer(String(base));
-    const counterAsset = getAssetFromCodeIssuer(String(counter));
+    const counterAsset = getAssetFromCodeIssuer(counterStr);
     const limitNum = limit ? parseInt(String(limit), 10) : 20;
     const validLimit = isNaN(limitNum) || limitNum <= 0 ? 20 : Math.min(limitNum, 100); // Max 100
 

@@ -23,6 +23,15 @@ export interface OperationsQuery {
   order?: 'asc' | 'desc';
 }
 
+// Simple in-memory cache for balances
+interface BalanceCacheEntry {
+  balances: any[];
+  timestamp: number;
+}
+
+const balanceCache = new Map<string, BalanceCacheEntry>();
+const CACHE_TTL = 30000; // 30 seconds
+
 export class AccountService {
   public async importAccount(input: ImportAccountInput) {
     const { mnemonic, secret, userId } = input;
@@ -66,77 +75,121 @@ export class AccountService {
     return { publicKey, secret: secretKey };
   }
 
-  public async getBalances(publicKey: string) {
+  public async getBalances(publicKey: string, useCache: boolean = true) {
     if (!publicKey) {
       throw new Error('publicKey is required');
     }
 
-    try {
-      const account = await server.loadAccount(publicKey);
-
-      const THRESHOLD = 0.1;
-
-      const balances = (account.balances || [])
-        .map((b: any) => {
-          const amountNum =
-            typeof b.balance === 'string' ? parseFloat(b.balance) : Number(b.balance || 0);
-
-          let assetLabel: string;
-          if (b.asset_type === 'native') {
-            assetLabel = 'Test Pi';
-          } else if (b.asset_type === 'liquidity_pool_shares') {
-            assetLabel = `liquidity_pool:${b.liquidity_pool_id || 'unknown'}`;
-          } else {
-            assetLabel = `${b.asset_code}:${b.asset_issuer}`;
-          }
-
-          return {
-            assetType: b.asset_type,
-            assetCode: b.asset_code || 'XLM',
-            assetIssuer: b.asset_issuer || null,
-            asset: assetLabel,
-            amount: amountNum,
-            raw: b.balance,
-          };
-        })
-        .filter((entry: any) => {
-          if (Number.isNaN(entry.amount)) return false;
-          return entry.amount > THRESHOLD;
-        });
-
-      return { publicKey, balances };
-    } catch (error: any) {
-      // Log the actual error for debugging
-      logger.error(`Error fetching balances for account ${publicKey}:`, {
-        message: error?.message,
-        status: error?.response?.status,
-        statusText: error?.response?.statusText,
-        errorType: error?.constructor?.name,
-        responseData: error?.response?.data,
-      });
-
-      // Only treat as "account not found" if:
-      // 1. HTTP status is 404 (Not Found)
-      // 2. OR error message specifically mentions account not found
-      // 3. OR it's a Stellar NotFoundError
-      const isNotFoundError =
-        error?.response?.status === 404 ||
-        error?.constructor?.name === 'NotFoundError' ||
-        (error?.message && (
-          error.message.toLowerCase().includes('account not found') ||
-          error.message.toLowerCase().includes('not found: account') ||
-          error.message === 'Not Found'
-        ));
-
-      if (isNotFoundError) {
-        logger.info(`Account ${publicKey} not found on Pi network, returning empty balances`);
-        return { publicKey, balances: [] };
+    // Check cache first
+    if (useCache) {
+      const cached = balanceCache.get(publicKey);
+      if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+        logger.info(`Using cached balances for account ${publicKey}`);
+        return { publicKey, balances: cached.balances };
       }
-
-      // Re-throw other errors (network issues, server errors, etc.)
-      logger.error(`Failed to fetch balances for account ${publicKey}:`, error);
-      throw error;
     }
+
+    // Retry logic for transient errors
+    const maxRetries = 3;
+    let lastError: any = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const account = await server.loadAccount(publicKey);
+
+        const THRESHOLD = 0.1;
+
+        const balances = (account.balances || [])
+          .map((b: any) => {
+            const amountNum =
+              typeof b.balance === 'string' ? parseFloat(b.balance) : Number(b.balance || 0);
+
+            let assetLabel: string;
+            if (b.asset_type === 'native') {
+              assetLabel = 'Test Pi';
+            } else if (b.asset_type === 'liquidity_pool_shares') {
+              assetLabel = `liquidity_pool:${b.liquidity_pool_id || 'unknown'}`;
+            } else {
+              assetLabel = `${b.asset_code}:${b.asset_issuer}`;
+            }
+
+            return {
+              assetType: b.asset_type,
+              assetCode: b.asset_code || 'XLM',
+              assetIssuer: b.asset_issuer || null,
+              asset: assetLabel,
+              amount: amountNum,
+              raw: b.balance,
+            };
+          })
+          .filter((entry: any) => {
+            if (Number.isNaN(entry.amount)) return false;
+            return entry.amount > THRESHOLD;
+          });
+
+        // Cache successful result
+        if (useCache) {
+          balanceCache.set(publicKey, {
+            balances,
+            timestamp: Date.now(),
+          });
+        }
+
+        logger.info(`Successfully fetched balances for account ${publicKey} (${balances.length} assets)`);
+        return { publicKey, balances };
+      } catch (error: any) {
+        lastError = error;
+
+        // Log the actual error for debugging (only on first attempt or final attempt)
+        if (attempt === 1 || attempt === maxRetries) {
+          const errorDetails = {
+            message: error?.message || String(error),
+            status: error?.response?.status,
+            statusText: error?.response?.statusText,
+            errorType: error?.constructor?.name,
+            responseData: error?.response?.data,
+            attempt,
+          };
+          logger.error(`Error fetching balances for account ${publicKey} (attempt ${attempt}/${maxRetries}):`, errorDetails);
+        }
+
+        // Check if it's a "not found" error
+        const isNotFoundError =
+          error?.response?.status === 404 ||
+          error?.constructor?.name === 'NotFoundError' ||
+          (error?.response?.data?.type === 'https://stellar.org/horizon-errors/not_found') ||
+          (error?.message && (
+            error.message.toLowerCase().includes('account not found') ||
+            error.message.toLowerCase().includes('not found: account') ||
+            error.message === 'Not Found'
+          ));
+
+        // If account not found, don't retry - return empty balances
+        if (isNotFoundError) {
+          logger.info(`Account ${publicKey} not found on Pi network (attempt ${attempt}), returning empty balances`);
+          // Cache empty balances too (shorter TTL would be better, but keeping it simple)
+          if (useCache) {
+            balanceCache.set(publicKey, {
+              balances: [],
+              timestamp: Date.now(),
+            });
+          }
+          return { publicKey, balances: [] };
+        }
+
+        // For other errors, retry with exponential backoff
+        if (attempt < maxRetries) {
+          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000); // Max 5 seconds
+          logger.warn(`Retrying balance fetch for ${publicKey} in ${delay}ms (attempt ${attempt}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+      }
+    }
+
+    // All retries failed
+    logger.error(`Failed to fetch balances for account ${publicKey} after ${maxRetries} attempts:`, lastError);
+    throw lastError;
   }
 
   public async getOperations(params: OperationsQuery) {
@@ -245,6 +298,18 @@ export class AccountService {
         order,
       },
     };
+  }
+
+  // Clear cache for a specific account (useful after transactions)
+  public clearBalanceCache(publicKey: string) {
+    balanceCache.delete(publicKey);
+    logger.info(`Cleared balance cache for account ${publicKey}`);
+  }
+
+  // Clear all cached balances
+  public clearAllBalanceCache() {
+    balanceCache.clear();
+    logger.info('Cleared all balance cache');
   }
 }
 
