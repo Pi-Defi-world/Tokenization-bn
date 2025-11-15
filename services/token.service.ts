@@ -231,9 +231,11 @@ class TokenService {
       const distributorPublicKey = distributor.publicKey();
       logger.info(`💳 Distributor keypair created: ${distributorPublicKey}`);
 
-      // Check if distributor account exists with retry logic
+      // Try to check if distributor account exists (non-fatal - will fail during trustline if truly missing)
       logger.info(`🔹 Checking if distributor account exists: ${distributorPublicKey}`);
       let distributorAccount;
+      let distributorAccountExists = false;
+      
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
           if (attempt > 1) {
@@ -243,26 +245,14 @@ class TokenService {
           distributorAccount = await server.loadAccount(distributorPublicKey);
           logger.info(`✅ Distributor account exists`);
           logger.info(`   Account sequence: ${distributorAccount.sequenceNumber()}`);
+          distributorAccountExists = true;
           break; // Success, exit retry loop
         } catch (accountError: any) {
           if (attempt === maxRetries) {
-            logger.error(`❌ Distributor account not found after ${maxRetries} attempts: ${distributorPublicKey}`);
-            logger.error(`   Error: ${accountError.message || JSON.stringify(accountError)}`);
-            if (accountError.response) {
-              logger.error(`   Response status: ${accountError.response.status}`);
-              logger.error(`   Response data: ${JSON.stringify(accountError.response.data, null, 2)}`);
-            }
-            // Log the full error details for debugging
-            const errorDetails = accountError.response?.data 
-              ? JSON.stringify(accountError.response.data, null, 2)
-              : accountError.message;
-            
-            throw new Error(
-              `Failed to load distributor account ${distributorPublicKey} from Horizon API after ${maxRetries} attempts. ` +
-              `Error: ${accountError.message}. ` +
-              `Horizon URL: ${env.HORIZON_URL}. ` +
-              `Check logs for full error details. Possible causes: API sync delay, network issue, or incorrect Horizon URL.`
-            );
+            logger.warn(`⚠️ Could not verify distributor account after ${maxRetries} attempts: ${distributorPublicKey}`);
+            logger.warn(`   Error: ${accountError.message}`);
+            logger.warn(`   Continuing anyway - trustline establishment will fail if account doesn't exist`);
+            // Don't throw - continue and let trustline establishment handle the error
           } else {
             logger.warn(`   Attempt ${attempt} failed: ${accountError.message}`);
           }
