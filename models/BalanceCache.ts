@@ -18,7 +18,7 @@ const balanceCacheSchema = new Schema<IBalanceCache>({
     index: true 
   },
   balances: { 
-    type: [Schema.Types.Mixed], 
+    type: Array,
     default: [] 
   },
   accountExists: { 

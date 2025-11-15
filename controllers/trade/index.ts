@@ -3,6 +3,7 @@ import { Request, Response } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { tradeService } from "../../services/trade.service";
 import { getAssetFromCodeIssuer } from "../../utils/asset";
+import { logger } from "../../utils/logger";
 
 export async function createSellOfferHandler(req: Request, res: Response) {
   try {
