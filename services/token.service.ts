@@ -139,8 +139,7 @@ class TokenService {
       const finalHomeDomain =
         homeDomain || `https://www.zyrapay.net/${assetCode}`;
 
-      // Try to set home domain, but don't fail the entire mint if it fails
-      // Home domain is optional and can be set later
+      
       if (finalHomeDomain) {
         try {
           await this.setHomeDomain(env.PLATFORM_ISSUER_SECRET, finalHomeDomain);
@@ -162,7 +161,7 @@ class TokenService {
       const distributorPublicKey = distributor.publicKey();
       logger.info(`💳 Distributor keypair created: ${distributorPublicKey}`);
 
-      // Check if distributor account exists before establishing trustline
+       
       try {
         logger.info(`🔹 Checking if distributor account exists: ${distributorPublicKey}`);
         await server.loadAccount(distributorPublicKey);
@@ -171,8 +170,9 @@ class TokenService {
         logger.error(`❌ Distributor account not found: ${distributorPublicKey}`);
         logger.error(`   Error: ${accountError.message || JSON.stringify(accountError)}`);
         throw new Error(
-          `Distributor account ${distributorPublicKey} does not exist on Stellar network. ` +
-          `The account must be created and funded before minting tokens.`
+          `Distributor account ${distributorPublicKey} does not exist on Pi Network. ` +
+          `The account must be created and funded with Pi coins before minting tokens. ` +
+          `Please ensure the account exists and has been activated on the Pi Network.`
         );
       }
 
@@ -203,9 +203,28 @@ class TokenService {
       tx.sign(issuer);
       logger.info(`🔹 Transaction signed, submitting...`);
 
-      const result = await server.submitTransaction(tx);
-      logger.success("🚀 Token minted successfully");
-      logger.info(`Transaction hash: ${result.hash}`);
+      let result;
+      try {
+        result = await server.submitTransaction(tx);
+        logger.success("🚀 Token minted successfully");
+        logger.info(`Transaction hash: ${result.hash}`);
+      } catch (submitError: any) {
+        logger.error(`❌ Transaction submission failed`);
+        logger.error(`   Error type: ${submitError.constructor.name}`);
+        logger.error(`   Error message: ${submitError.message}`);
+        
+        // Log detailed Stellar error if available
+        if (submitError.response) {
+          logger.error(`   Response status: ${submitError.response.status}`);
+          logger.error(`   Response data: ${JSON.stringify(submitError.response.data, null, 2)}`);
+          
+          if (submitError.response.data?.extras?.result_codes) {
+            logger.error(`   Result codes: ${JSON.stringify(submitError.response.data.extras.result_codes, null, 2)}`);
+          }
+        }
+        
+        throw submitError;
+      }
 
       logger.info(`🔹 Saving token to database...`);
       const token = await Token.create({
