@@ -185,7 +185,7 @@ class SwapService {
           // Case-insensitive comparison
           const tokenAUpper = tokenA === "native" ? "native" : tokenA.toUpperCase();
           const tokenBUpper = tokenB === "native" ? "native" : tokenB.toUpperCase();
-          const assetsUpper = assets.map(a => a === "native" ? "native" : a.toUpperCase());
+          const assetsUpper = assets.map((a: string) => a === "native" ? "native" : a.toUpperCase());
           if (assetsUpper.includes(tokenAUpper) && assetsUpper.includes(tokenBUpper)) {
             matchedPools.push(pool);
           }
@@ -272,7 +272,7 @@ class SwapService {
         // Case-insensitive comparison
         const fromCodeUpper = from.code === "native" ? "native" : from.code.toUpperCase();
         const toCodeUpper = to.code === "native" ? "native" : to.code.toUpperCase();
-        const assetsUpper = assets.map(a => a === "native" ? "native" : a.toUpperCase());
+        const assetsUpper = assets.map((a: string) => a === "native" ? "native" : a.toUpperCase());
         return assetsUpper.includes(fromCodeUpper) && assetsUpper.includes(toCodeUpper);
       });
 
