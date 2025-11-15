@@ -239,7 +239,6 @@ class TokenService {
         throw submitError;
       }
 
-      // Save token to database
       const token = await Token.create({
         ...data,
         assetCode,
@@ -317,6 +316,7 @@ class TokenService {
         .build();
 
       tx.sign(holderKeypair);
+
       const result = await server.submitTransaction(tx);
 
       logger.success(`✅ Burned ${amount} ${assetCode}. Transaction hash: ${result.hash}`);
