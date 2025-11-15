@@ -136,13 +136,28 @@ class TokenService {
       logger.info("🔹 Starting mintToken function");
 
       const issuer = StellarSdk.Keypair.fromSecret(env.PLATFORM_ISSUER_SECRET);
+      const issuerPublicKey = issuer.publicKey();
       const finalHomeDomain =
         homeDomain || `https://www.zyrapay.net/${assetCode}`;
 
+      // Load issuer account first to verify it exists
+      logger.info(`🔹 Loading issuer account: ${issuerPublicKey}`);
+      let issuerAccount = await server.loadAccount(issuerPublicKey);
+      logger.info(`✅ Issuer account loaded successfully`);
       
+      // Set home domain if needed (this will update the account sequence)
+      let homeDomainWasSet = false;
       if (finalHomeDomain) {
         try {
-          await this.setHomeDomain(env.PLATFORM_ISSUER_SECRET, finalHomeDomain);
+          const homeDomainResult = await this.setHomeDomain(env.PLATFORM_ISSUER_SECRET, finalHomeDomain);
+          if (homeDomainResult && homeDomainResult.hash !== 'no-op') {
+            homeDomainWasSet = true;
+            logger.info(`🔹 Home domain was updated, reloading issuer account to get new sequence...`);
+            // Reload account to get updated sequence number after home domain change
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Small delay for ledger propagation
+            issuerAccount = await server.loadAccount(issuerPublicKey);
+            logger.info(`✅ Issuer account reloaded with new sequence: ${issuerAccount.sequenceNumber()}`);
+          }
         } catch (homeDomainError: any) {
           logger.warn(
             `⚠️ Failed to set home domain, continuing with mint: ${homeDomainError.message}`
@@ -150,10 +165,6 @@ class TokenService {
           // Continue with mint even if home domain setting fails
         }
       }
-
-      logger.info(`🔹 Loading issuer account: ${issuer.publicKey()}`);
-      const issuerAccount = await server.loadAccount(issuer.publicKey());
-      logger.info(`✅ Issuer account loaded successfully`);
       
       const asset = getAsset(assetCode, issuer.publicKey());
 
