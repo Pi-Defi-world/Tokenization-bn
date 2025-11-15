@@ -10,19 +10,41 @@ export const serverFallback = new StellarSdk.Horizon.Server(
   env.horizon?.pi?.testnet || 'https://api.testnet.minepi.com'
 );
 
+// Stellar Horizon servers (third option - official Stellar Horizon)
+export const stellarHorizonTestnet = new StellarSdk.Horizon.Server(
+  env.horizon?.stellar?.testnet || 'https://horizon-testnet.stellar.org'
+);
+
+export const stellarHorizonMainnet = new StellarSdk.Horizon.Server(
+  env.horizon?.stellar?.mainnet || 'https://horizon.stellar.org'
+);
+
 // Helper function to get all available Horizon servers for balance checks
+// Returns servers in order of priority: Pi Network -> Stellar Horizon
 export const getBalanceCheckServers = () => {
   const servers: (typeof server)[] = [];
   
-  // Primary: Current configured Horizon URL
+  // Primary: Current configured Horizon URL (usually Pi Network)
   servers.push(server);
   
-  // Fallback: Pi Network testnet (if different from primary)
+  // Fallback 1: Pi Network testnet (if different from primary)
   const primaryUrl = env.HORIZON_URL;
-  const fallbackUrl = env.horizon?.pi?.testnet || 'https://api.testnet.minepi.com';
+  const piTestnetUrl = env.horizon?.pi?.testnet || 'https://api.testnet.minepi.com';
   
-  if (primaryUrl !== fallbackUrl) {
+  if (primaryUrl !== piTestnetUrl) {
     servers.push(serverFallback);
+  }
+  
+  // Fallback 2: Stellar Horizon testnet (third option)
+  // Note: Stellar Horizon won't have Pi Network accounts, but useful for cross-checking
+  // Only add if we're on testnet (Pi Testnet typically uses testnet)
+  const isTestnet = env.NETWORK?.toLowerCase().includes('testnet') || 
+                    env.HORIZON_URL?.includes('testnet');
+  
+  if (isTestnet) {
+    servers.push(stellarHorizonTestnet);
+  } else {
+    servers.push(stellarHorizonMainnet);
   }
   
   return servers;

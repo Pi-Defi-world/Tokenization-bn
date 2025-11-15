@@ -114,8 +114,38 @@ export class AccountService {
         const serverName = serverIndex === 0 ? 'primary' : `fallback-${serverIndex}`;
         
         try {
-          logger.info(`Attempting to fetch balances from ${serverName} Horizon server (attempt ${attempt}/${maxRetries})`);
-          const account = await currentServer.loadAccount(publicKey);
+          logger.info(`Attempting to fetch balances from ${serverName} Horizon server using Stellar SDK (attempt ${attempt}/${maxRetries})`);
+          
+          // Method 1: Use Stellar SDK's loadAccount() - standard SDK method
+          // This is the primary and recommended way to fetch account balances
+          let account;
+          try {
+            account = await currentServer.loadAccount(publicKey);
+          } catch (loadAccountError: any) {
+            // Method 2: Alternative SDK method - accounts().accountId() as fallback
+            // This uses the accounts endpoint directly via SDK
+            logger.warn(`loadAccount() failed, trying alternative SDK method accounts().accountId()...`);
+            try {
+              const accountResponse = await currentServer.accounts().accountId(publicKey).call();
+              // Convert the response to match loadAccount format
+              account = {
+                accountId: accountResponse.account_id,
+                balances: accountResponse.balances || [],
+                sequenceNumber: accountResponse.sequence_number,
+                subentryCount: accountResponse.subentry_count,
+                thresholds: accountResponse.thresholds,
+                flags: accountResponse.flags,
+                signers: accountResponse.signers || [],
+                data: accountResponse.data || {},
+                homeDomain: accountResponse.home_domain,
+              };
+              logger.info(`✅ Successfully fetched using alternative SDK method accounts().accountId()`);
+            } catch (accountsError: any) {
+              // Both SDK methods failed, throw the original error
+              throw loadAccountError;
+            }
+          }
+          
           accountExists = true;
           
           // If we used a fallback server, log it
