@@ -76,12 +76,21 @@ export const executeSwap = async (req: Request, res: Response) => {
     if (!sendAmount)
       return res.status(400).json({ success: false, message: 'Missing sendAmount' });
 
+    // Convert from/to objects to strings if needed
+    const fromStr = typeof from === 'string' 
+      ? from 
+      : (from.code === 'native' ? 'native' : `${from.code}:${from.issuer || ''}`);
+    
+    const toStr = typeof to === 'string'
+      ? to
+      : (to.code === 'native' ? 'native' : `${to.code}:${to.issuer || ''}`);
+
     const result = await swapService.swapWithPool(
       userSecret,
       poolId,
-      from,
-      to,
-      sendAmount,
+      fromStr,
+      toStr,
+      String(sendAmount),
       slippagePercent
     );
 

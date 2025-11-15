@@ -102,10 +102,14 @@ class SwapService {
 
       logger.info(`----------------------------------------------`);
       logger.info(`🔁 Swap via Pool: ${poolId}`);
-      logger.info(`💸 ${sendAmount} ${from} ➡ ${to} (slippage ${slippagePercent}%)`);
+      logger.info(`💸 ${sendAmount} ${String(from)} ➡ ${String(to)} (slippage ${slippagePercent}%)`);
 
-      const [fromCode, fromIssuer] = from.split(':');
-      const [toCode, toIssuer] = to.split(':');
+      // Ensure from and to are strings
+      const fromStr = typeof from === 'string' ? from : String(from);
+      const toStr = typeof to === 'string' ? to : String(to);
+
+      const [fromCode, fromIssuer] = fromStr.split(':');
+      const [toCode, toIssuer] = toStr.split(':');
 
       const fromAsset =
         fromCode === 'native' ? StellarSdk.Asset.native() : getAsset(fromCode, fromIssuer);
