@@ -87,13 +87,23 @@ export class AccountService {
         });
 
         if (cached) {
-          logger.info(`Using cached balances for account ${publicKey} (from DB, expires: ${cached.expiresAt.toISOString()})`);
-          return { 
-            publicKey, 
-            balances: cached.balances,
-            cached: true,
-            accountExists: cached.accountExists 
-          };
+          // If account was cached as "not found" but cache is older than 1 minute, allow refresh
+          // This prevents stale "not found" caches from blocking legitimate account checks
+          const cacheAge = Date.now() - cached.lastFetched.getTime();
+          const shouldRefreshStaleNotFound = cached.accountExists === false && cacheAge > 60000; // 1 minute
+          
+          if (shouldRefreshStaleNotFound) {
+            logger.info(`Cached "not found" is stale (${Math.round(cacheAge / 1000)}s old), refreshing...`);
+            // Continue to fetch from network
+          } else {
+            logger.info(`Using cached balances for account ${publicKey} (from DB, expires: ${cached.expiresAt.toISOString()}, exists: ${cached.accountExists})`);
+            return { 
+              publicKey, 
+              balances: cached.balances,
+              cached: true,
+              accountExists: cached.accountExists 
+            };
+          }
         }
       } catch (dbError) {
         logger.warn(`Error reading from balance cache DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
@@ -119,12 +129,14 @@ export class AccountService {
           // Method 1: Use Stellar SDK's loadAccount() - standard SDK method
           // This is the primary and recommended way to fetch account balances
           let account;
+          let loadAccountError: any = null;
           try {
             account = await currentServer.loadAccount(publicKey);
-          } catch (loadAccountError: any) {
+          } catch (err: any) {
+            loadAccountError = err;
             // Method 2: Alternative SDK method - accounts().accountId() as fallback
             // This uses the accounts endpoint directly via SDK
-            logger.warn(`loadAccount() failed, trying alternative SDK method accounts().accountId()...`);
+            logger.warn(`loadAccount() failed (${err?.response?.status || err?.constructor?.name || 'unknown error'}), trying alternative SDK method accounts().accountId()...`);
             try {
               const accountResponse = await currentServer.accounts().accountId(publicKey).call();
               // Convert the response to match loadAccount format
@@ -141,7 +153,25 @@ export class AccountService {
               };
               logger.info(`✅ Successfully fetched using alternative SDK method accounts().accountId()`);
             } catch (accountsError: any) {
-              // Both SDK methods failed, throw the original error
+              // Log both errors for debugging
+              logger.warn(`Alternative SDK method also failed: ${accountsError?.response?.status || accountsError?.constructor?.name || 'unknown error'}`);
+              
+              // If both methods failed with 404, it's definitely "not found"
+              const isLoadAccount404 = loadAccountError?.response?.status === 404 || 
+                                       loadAccountError?.constructor?.name === 'NotFoundError';
+              const isAccounts404 = accountsError?.response?.status === 404 || 
+                                   accountsError?.constructor?.name === 'NotFoundError';
+              
+              if (isLoadAccount404 && isAccounts404) {
+                // Both methods confirm 404 - definitely not found
+                throw loadAccountError;
+              }
+              
+              // If one is 404 and the other isn't, or both are different errors, throw the more specific one
+              // Prefer the accounts error if it's more specific, otherwise use loadAccount error
+              if (isAccounts404) {
+                throw accountsError;
+              }
               throw loadAccountError;
             }
           }
@@ -226,11 +256,25 @@ export class AccountService {
         lastError?.response?.status === 404 ||
         lastError?.constructor?.name === 'NotFoundError' ||
         (lastError?.response?.data?.type === 'https://stellar.org/horizon-errors/not_found') ||
+        (lastError?.response?.data?.status === 404) ||
         (lastError?.message && (
           lastError.message.toLowerCase().includes('account not found') ||
           lastError.message.toLowerCase().includes('not found: account') ||
-          lastError.message === 'Not Found'
+          lastError.message === 'Not Found' ||
+          lastError.message.toLowerCase().includes('404')
         ));
+      
+      // Log detailed error info for debugging
+      if (attempt === 1) {
+        const errorDetails = {
+          status: lastError?.response?.status,
+          errorType: lastError?.constructor?.name,
+          message: lastError?.message,
+          dataType: lastError?.response?.data?.type,
+          isNotFound: isNotFoundError,
+        };
+        logger.warn(`Error details for ${publicKey}: ${JSON.stringify(errorDetails)}`);
+      }
 
       // If account not found, don't retry - cache and return empty balances
       if (isNotFoundError) {

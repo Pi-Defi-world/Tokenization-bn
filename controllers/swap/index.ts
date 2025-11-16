@@ -22,39 +22,51 @@ export const swapToken = async (req: Request, res: Response) => {
 
 export const quoteSwap = async (req: Request, res: Response) => {
   try {
-    const { poolId, from, to, amount, slippagePercent = 1 } = req.query;
+    const { poolId, from, to, amount, slippagePercent = 1, publicKey } = req.query;
 
     if (!poolId || !from || !to || !amount)
       return res.status(400).json({ success: false, message: 'Missing parameters' });
 
-    const pool = await poolService.getLiquidityPoolById(poolId as string);
-    const [resA, resB] = pool.reserves;
+    // Parse from/to - can be string "native" or "CODE:ISSUER" or object
+    let fromAsset: { code: string; issuer?: string };
+    let toAsset: { code: string; issuer?: string };
 
-    const x = parseFloat(resA.amount);
-    const y = parseFloat(resB.amount);
-    const input = parseFloat(amount as string);
-    const fee = pool.fee_bp / 10000;
+    if (typeof from === 'string') {
+      if (from === 'native') {
+        fromAsset = { code: 'native' };
+      } else if (from.includes(':')) {
+        const [code, issuer] = from.split(':');
+        fromAsset = { code, issuer };
+      } else {
+        return res.status(400).json({ success: false, message: 'Invalid from format. Use "native" or "CODE:ISSUER"' });
+      }
+    } else {
+      return res.status(400).json({ success: false, message: 'from must be a string' });
+    }
 
-    const isAtoB = resA.asset.includes((from as string));
-    const inputReserve = isAtoB ? x : y;
-    const outputReserve = isAtoB ? y : x;
+    if (typeof to === 'string') {
+      if (to === 'native') {
+        toAsset = { code: 'native' };
+      } else if (to.includes(':')) {
+        const [code, issuer] = to.split(':');
+        toAsset = { code, issuer };
+      } else {
+        return res.status(400).json({ success: false, message: 'Invalid to format. Use "native" or "CODE:ISSUER"' });
+      }
+    } else {
+      return res.status(400).json({ success: false, message: 'to must be a string' });
+    }
 
-    const inputAfterFee = input * (1 - fee);
-    const outputAmount = (inputAfterFee * outputReserve) / (inputReserve + inputAfterFee);
-    const minOut = (outputAmount * (1 - Number(slippagePercent) / 100)).toFixed(7);
-
-    logger.info(
-      `💱 Quote: ${input} ${from} -> ~${outputAmount.toFixed(7)} ${to} (minOut: ${minOut})`
+    const result = await swapService.quoteSwap(
+      poolId as string,
+      fromAsset,
+      toAsset,
+      amount as string,
+      Number(slippagePercent),
+      publicKey as string | undefined
     );
 
-    return res.json({
-      success: true,
-      expectedOutput: outputAmount.toFixed(7),
-      minOut,
-      slippagePercent,
-      fee: pool.fee_bp / 100,
-      poolId,
-    });
+    return res.json(result);
   } catch (err: any) {
     logger.error(`❌ quoteSwap failed:`, err);
     res.status(500).json({ success: false, error: err.message });
@@ -98,7 +110,13 @@ export const executeSwap = async (req: Request, res: Response) => {
     res.json({ success: true, data: result });
   } catch (err: any) {
     logger.error(`❌ executeSwap failed:`, err);
-    res.status(500).json({ success: false, error: err.message });
+    
+    // Return appropriate status code based on error type
+    const statusCode = err?.status === 400 || err?.response?.status === 400 ? 400 : 500;
+    return res.status(statusCode).json({ 
+      success: false, 
+      error: err.message || err.toString() 
+    });
   }
 };
 

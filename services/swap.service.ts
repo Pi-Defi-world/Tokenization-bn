@@ -48,7 +48,8 @@ class SwapService {
     from: { code: string; issuer?: string },
     to: { code: string; issuer?: string },
     amount: string,
-    slippagePercent: number = 1
+    slippagePercent: number = 1,
+    publicKey?: string // Optional: for balance validation
   ) {
     try {
       logger.info(`🔹 Quoting swap from ${from.code} ➡ ${to.code} in pool ${poolId}`);
@@ -69,8 +70,36 @@ class SwapService {
         (inputAfterFee * outputReserve) / (inputReserve + inputAfterFee);
       const minOut = (outputAmount * (1 - slippagePercent / 100)).toFixed(7);
 
+      // Validate balance if publicKey is provided
+      let availableBalance: number | null = null;
+      let isSufficient = true;
+      let balanceError: string | null = null;
+
+      if (publicKey && from.code === 'native') {
+        try {
+          const account = await server.loadAccount(publicKey);
+          const nativeBalance = account.balances.find((b: any) => b.asset_type === 'native');
+          if (nativeBalance) {
+            availableBalance = parseFloat(nativeBalance.balance);
+            // Account for transaction fee (typically 100 stroops = 0.00001 XLM/Test Pi)
+            // And minimum reserve (typically 1 XLM/Test Pi for base account)
+            const baseFee = await server.fetchBaseFee();
+            const feeInXLM = baseFee / 10000000; // Convert stroops to XLM
+            const minReserve = 1.0; // Minimum reserve requirement
+            const totalRequired = input + feeInXLM + minReserve;
+            
+            if (availableBalance < totalRequired) {
+              isSufficient = false;
+              balanceError = `Insufficient balance. Available: ${availableBalance.toFixed(7)} ${from.code}, Required: ${input.toFixed(7)} + ${feeInXLM.toFixed(7)} (fee) + ${minReserve.toFixed(7)} (reserve) = ${totalRequired.toFixed(7)}`;
+            }
+          }
+        } catch (err: any) {
+          logger.warn(`Could not validate balance for quote: ${err?.message || String(err)}`);
+        }
+      }
+
       logger.info(
-        `💰 Quote result: expect ≈ ${outputAmount.toFixed(7)} ${to.code}, min after slippage: ${minOut}`
+        `💰 Quote result: expect ≈ ${outputAmount.toFixed(7)} ${to.code}, min after slippage: ${minOut}${availableBalance !== null ? `, available: ${availableBalance.toFixed(7)}` : ''}`
       );
 
       return {
@@ -80,6 +109,9 @@ class SwapService {
         minOut,
         slippagePercent,
         fee: pool.fee_bp / 100,
+        availableBalance: availableBalance !== null ? availableBalance.toFixed(7) : null,
+        isSufficient,
+        balanceError,
       };
     } catch (err: any) {
       logger.error(`❌ quoteSwap failed: ${err.message}`);
@@ -96,20 +128,20 @@ class SwapService {
     slippagePercent: number = 1
   ) {
     const start = Date.now();
-    try {
-      const user = StellarSdk.Keypair.fromSecret(userSecret);
-      const publicKey = user.publicKey();
+    const user = StellarSdk.Keypair.fromSecret(userSecret);
+    const publicKey = user.publicKey();
 
+    // Ensure from and to are strings
+    const fromStr = typeof from === 'string' ? from : String(from);
+    const toStr = typeof to === 'string' ? to : String(to);
+
+    const [fromCode, fromIssuer] = fromStr.split(':');
+    const [toCode, toIssuer] = toStr.split(':');
+
+    try {
       logger.info(`----------------------------------------------`);
       logger.info(`🔁 Swap via Pool: ${poolId}`);
       logger.info(`💸 ${sendAmount} ${String(from)} ➡ ${String(to)} (slippage ${slippagePercent}%)`);
-
-      // Ensure from and to are strings
-      const fromStr = typeof from === 'string' ? from : String(from);
-      const toStr = typeof to === 'string' ? to : String(to);
-
-      const [fromCode, fromIssuer] = fromStr.split(':');
-      const [toCode, toIssuer] = toStr.split(':');
 
       const fromAsset =
         fromCode === 'native' ? StellarSdk.Asset.native() : getAsset(fromCode, fromIssuer);
@@ -138,6 +170,44 @@ class SwapService {
 
       const account = await server.loadAccount(publicKey);
       const baseFee = await server.fetchBaseFee();
+
+      // Validate balance before attempting swap
+      if (fromCode === 'native') {
+        const nativeBalance = account.balances.find((b: any) => b.asset_type === 'native');
+        if (nativeBalance) {
+          const availableBalance = parseFloat(nativeBalance.balance);
+          const feeInXLM = baseFee / 10000000; // Convert stroops to XLM
+          const minReserve = 1.0; // Minimum reserve requirement
+          const totalRequired = input + feeInXLM + minReserve;
+
+          logger.info(`💰 Balance check: Available: ${availableBalance.toFixed(7)} ${fromCode}, Required: ${input.toFixed(7)} (amount) + ${feeInXLM.toFixed(7)} (fee) + ${minReserve.toFixed(7)} (reserve) = ${totalRequired.toFixed(7)}`);
+
+          if (availableBalance < totalRequired) {
+            const errorMsg = `Insufficient balance. Available: ${availableBalance.toFixed(7)} ${fromCode === 'native' ? 'Test Pi' : fromCode}, Required: ${totalRequired.toFixed(7)} (including ${feeInXLM.toFixed(7)} fee and ${minReserve.toFixed(7)} reserve)`;
+            logger.error(`❌ ${errorMsg}`);
+            throw new Error(errorMsg);
+          }
+        } else {
+          throw new Error(`No ${fromCode === 'native' ? 'Test Pi' : fromCode} balance found`);
+        }
+      } else {
+        // For non-native assets, check trustline balance
+        const assetBalance = account.balances.find(
+          (b: any) => b.asset_code === fromCode && b.asset_issuer === fromIssuer
+        );
+        if (assetBalance) {
+          const availableBalance = parseFloat(assetBalance.balance);
+          logger.info(`💰 Balance check: Available: ${availableBalance.toFixed(7)} ${fromCode}, Required: ${input.toFixed(7)}`);
+
+          if (availableBalance < input) {
+            const errorMsg = `Insufficient balance. Available: ${availableBalance.toFixed(7)} ${fromCode}, Required: ${input.toFixed(7)}`;
+            logger.error(`❌ ${errorMsg}`);
+            throw new Error(errorMsg);
+          }
+        } else {
+          throw new Error(`No ${fromCode} balance found. You may need to establish a trustline first.`);
+        }
+      }
 
       const tx = new StellarSdk.TransactionBuilder(account, {
         fee: baseFee.toString(),
@@ -175,6 +245,56 @@ class SwapService {
         expectedOutput: outputAmount.toFixed(7),
       };
     } catch (err: any) {
+      // Handle transaction failure (400 Bad Request)
+      if (err?.response?.status === 400 && err?.response?.data) {
+        const errorData = err.response.data;
+        const resultCodes = errorData.extras?.result_codes;
+        const operationsResultCodes = resultCodes?.operations || [];
+        const transactionResultCode = resultCodes?.transaction || 'unknown';
+
+        // Build detailed error message
+        let errorMessage = 'Transaction failed';
+        
+        if (transactionResultCode === 'tx_failed') {
+          if (operationsResultCodes.length > 0) {
+            const opError = operationsResultCodes[0];
+            if (opError === 'op_no_trust') {
+              errorMessage = 'Trustline not found. You need to establish a trustline for this asset before swapping.';
+            } else if (opError === 'op_underfunded') {
+              errorMessage = `Insufficient balance. You do not have enough ${fromCode === 'native' ? 'Test Pi' : fromCode} to complete this swap.`;
+            } else if (opError === 'op_low_reserve') {
+              errorMessage = 'Insufficient reserve. Your account needs more Test Pi to maintain the minimum reserve.';
+            } else if (opError === 'op_line_full') {
+              errorMessage = 'Trustline limit reached. You have reached the maximum balance for this asset.';
+            } else if (opError === 'op_path_payment_strict_send_no_destination') {
+              errorMessage = 'No path found. Unable to find a valid path for this swap.';
+            } else if (opError === 'op_path_payment_strict_send_too_few_offers') {
+              errorMessage = 'Insufficient liquidity. The pool does not have enough liquidity for this swap.';
+            } else if (opError === 'op_path_payment_strict_send_offer_cross_self') {
+              errorMessage = 'Invalid swap path. The swap path crosses with your own offer.';
+            } else {
+              errorMessage = `Transaction failed: ${opError}. Please check your balance and account status.`;
+            }
+          } else {
+            errorMessage = 'Transaction failed. Please check your balance and account status.';
+          }
+        } else {
+          errorMessage = `Transaction failed: ${transactionResultCode}`;
+        }
+
+        logger.error(`Transaction failed for account ${publicKey}:`, {
+          transactionCode: transactionResultCode,
+          operationsCodes: operationsResultCodes,
+          fullError: errorData,
+        });
+
+        const enhancedError = new Error(errorMessage);
+        (enhancedError as any).response = err.response;
+        (enhancedError as any).status = 400;
+        throw enhancedError;
+      }
+
+      // Re-throw other errors
       logger.error(`❌ swapWithPool failed:`, JSON.stringify(err.response?.data || err, null, 2));
       throw err;
     }
@@ -352,6 +472,55 @@ class SwapService {
 
       return { hash: res.hash, expectedOutput: outputAmount.toFixed(7) };
     } catch (err: any) {
+      // Handle transaction failure (400 Bad Request)
+      if (err?.response?.status === 400 && err?.response?.data) {
+        const errorData = err.response.data;
+        const resultCodes = errorData.extras?.result_codes;
+        const operationsResultCodes = resultCodes?.operations || [];
+        const transactionResultCode = resultCodes?.transaction || 'unknown';
+
+        // Build detailed error message
+        let errorMessage = 'Transaction failed';
+        
+        if (transactionResultCode === 'tx_failed') {
+          if (operationsResultCodes.length > 0) {
+            const opError = operationsResultCodes[0];
+            if (opError === 'op_no_trust') {
+              errorMessage = 'Trustline not found. You need to establish a trustline for this asset before swapping.';
+            } else if (opError === 'op_underfunded') {
+              errorMessage = `Insufficient balance. You do not have enough ${from.code === 'native' ? 'Test Pi' : from.code} to complete this swap.`;
+            } else if (opError === 'op_low_reserve') {
+              errorMessage = 'Insufficient reserve. Your account needs more Test Pi to maintain the minimum reserve.';
+            } else if (opError === 'op_line_full') {
+              errorMessage = 'Trustline limit reached. You have reached the maximum balance for this asset.';
+            } else if (opError === 'op_path_payment_strict_send_no_destination') {
+              errorMessage = 'No path found. Unable to find a valid path for this swap.';
+            } else if (opError === 'op_path_payment_strict_send_too_few_offers') {
+              errorMessage = 'Insufficient liquidity. The pool does not have enough liquidity for this swap.';
+            } else if (opError === 'op_path_payment_strict_send_offer_cross_self') {
+              errorMessage = 'Invalid swap path. The swap path crosses with your own offer.';
+            } else {
+              errorMessage = `Transaction failed: ${opError}. Please check your balance and account status.`;
+            }
+          } else {
+            errorMessage = 'Transaction failed. Please check your balance and account status.';
+          }
+        } else {
+          errorMessage = `Transaction failed: ${transactionResultCode}`;
+        }
+
+        logger.error(`Transaction failed for swap ${from.code} ➡ ${to.code}:`, {
+          transactionCode: transactionResultCode,
+          operationsCodes: operationsResultCodes,
+          fullError: errorData,
+        });
+
+        const enhancedError = new Error(errorMessage);
+        (enhancedError as any).response = err.response;
+        (enhancedError as any).status = 400;
+        throw enhancedError;
+      }
+
       logger.error(`❌ Swap failed: ${JSON.stringify(err.response?.data || err, null, 2)}`);
       logger.info('----------------------------------------------');
       throw err;
