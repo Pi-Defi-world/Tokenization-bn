@@ -78,7 +78,6 @@ export class AccountService {
       throw new Error('publicKey is required');
     }
 
-    // Check database cache first (unless forcing refresh)
     if (useCache && !forceRefresh) {
       try {
         const cached = await BalanceCache.findOne({ 
@@ -87,8 +86,6 @@ export class AccountService {
         });
 
         if (cached) {
-          // If account was cached as "not found" but cache is older than 1 minute, allow refresh
-          // This prevents stale "not found" caches from blocking legitimate account checks
           const cacheAge = Date.now() - cached.lastFetched.getTime();
           const shouldRefreshStaleNotFound = cached.accountExists === false && cacheAge > 60000; // 1 minute
           
