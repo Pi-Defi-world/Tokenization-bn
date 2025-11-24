@@ -1,4 +1,4 @@
-import { server, getBalanceCheckServers } from '../config/stellar';
+import { server } from '../config/stellar';
 import { getKeypairFromMnemonic, getKeypairFromSecret } from '../utils/keypair';
 import User from '../models/User';
 import BalanceCache from '../models/BalanceCache';
@@ -78,271 +78,163 @@ export class AccountService {
       throw new Error('publicKey is required');
     }
 
-    if (useCache && !forceRefresh) {
-      try {
-        const cached = await BalanceCache.findOne({ 
-          publicKey,
-          expiresAt: { $gt: new Date() } // Not expired
-        });
-
-        if (cached) {
-          const cacheAge = Date.now() - cached.lastFetched.getTime();
-          const shouldRefreshStaleNotFound = cached.accountExists === false && cacheAge > 60000; // 1 minute
-          
-          if (shouldRefreshStaleNotFound) {
-            logger.info(`Cached "not found" is stale (${Math.round(cacheAge / 1000)}s old), refreshing...`);
-            // Continue to fetch from network
-          } else {
-            logger.info(`Using cached balances for account ${publicKey} (from DB, expires: ${cached.expiresAt.toISOString()}, exists: ${cached.accountExists})`);
-            return { 
-              publicKey, 
-              balances: cached.balances,
-              cached: true,
-              accountExists: cached.accountExists 
-            };
-          }
-        }
-      } catch (dbError) {
-        logger.warn(`Error reading from balance cache DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
-        // Continue to fetch from network if DB read fails
-      }
-    }
-
-    // Fetch from network with retry logic and dual Horizon endpoints
-    const maxRetries = 2; // Reduced retries for scalability
-    const horizonServers = getBalanceCheckServers();
-    let lastError: any = null;
-    let accountExists = true;
-
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      // Try each Horizon server in order
-      for (let serverIndex = 0; serverIndex < horizonServers.length; serverIndex++) {
-        const currentServer = horizonServers[serverIndex];
-        const serverName = serverIndex === 0 ? 'primary' : `fallback-${serverIndex}`;
-        
-        try {
-          logger.info(`Attempting to fetch balances from ${serverName} Horizon server using Stellar SDK (attempt ${attempt}/${maxRetries})`);
-          
-          // Method 1: Use Stellar SDK's loadAccount() - standard SDK method
-          // This is the primary and recommended way to fetch account balances
-          let account;
-          let loadAccountError: any = null;
-          try {
-            account = await currentServer.loadAccount(publicKey);
-          } catch (err: any) {
-            loadAccountError = err;
-            // Method 2: Alternative SDK method - accounts().accountId() as fallback
-            // This uses the accounts endpoint directly via SDK
-            logger.warn(`loadAccount() failed (${err?.response?.status || err?.constructor?.name || 'unknown error'}), trying alternative SDK method accounts().accountId()...`);
-            try {
-              const accountResponse = await currentServer.accounts().accountId(publicKey).call();
-              // Convert the response to match loadAccount format
-              account = {
-                accountId: accountResponse.account_id,
-                balances: accountResponse.balances || [],
-                sequenceNumber: accountResponse.sequence_number,
-                subentryCount: accountResponse.subentry_count,
-                thresholds: accountResponse.thresholds,
-                flags: accountResponse.flags,
-                signers: accountResponse.signers || [],
-                data: accountResponse.data || {},
-                homeDomain: accountResponse.home_domain,
-              };
-              logger.info(`✅ Successfully fetched using alternative SDK method accounts().accountId()`);
-            } catch (accountsError: any) {
-              // Log both errors for debugging
-              logger.warn(`Alternative SDK method also failed: ${accountsError?.response?.status || accountsError?.constructor?.name || 'unknown error'}`);
-              
-              // If both methods failed with 404, it's definitely "not found"
-              const isLoadAccount404 = loadAccountError?.response?.status === 404 || 
-                                       loadAccountError?.constructor?.name === 'NotFoundError';
-              const isAccounts404 = accountsError?.response?.status === 404 || 
-                                   accountsError?.constructor?.name === 'NotFoundError';
-              
-              if (isLoadAccount404 && isAccounts404) {
-                // Both methods confirm 404 - definitely not found
-                throw loadAccountError;
-              }
-              
-              // If one is 404 and the other isn't, or both are different errors, throw the more specific one
-              // Prefer the accounts error if it's more specific, otherwise use loadAccount error
-              if (isAccounts404) {
-                throw accountsError;
-              }
-              throw loadAccountError;
-            }
-          }
-          
-          accountExists = true;
-          
-          // If we used a fallback server, log it
-          if (serverIndex > 0) {
-            logger.info(`✅ Successfully fetched from ${serverName} Horizon server`);
-          }
-
-        const THRESHOLD = 0.1;
-
-        const balances = (account.balances || [])
-          .map((b: any) => {
-            const amountNum =
-              typeof b.balance === 'string' ? parseFloat(b.balance) : Number(b.balance || 0);
-
-            let assetLabel: string;
-            if (b.asset_type === 'native') {
-              assetLabel = 'Test Pi';
-            } else if (b.asset_type === 'liquidity_pool_shares') {
-              assetLabel = `liquidity_pool:${b.liquidity_pool_id || 'unknown'}`;
-            } else {
-              assetLabel = `${b.asset_code}:${b.asset_issuer}`;
-            }
-
-            return {
-              assetType: b.asset_type,
-              assetCode: b.asset_code || 'XLM',
-              assetIssuer: b.asset_issuer || null,
-              asset: assetLabel,
-              amount: amountNum,
-              raw: b.balance,
-            };
-          })
-          .filter((entry: any) => {
-            if (Number.isNaN(entry.amount)) return false;
-            return entry.amount > THRESHOLD;
-          });
-
-        // Save to database cache
-        if (useCache) {
-          try {
-            const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
-            await BalanceCache.findOneAndUpdate(
-              { publicKey },
-              {
-                publicKey,
-                balances,
-                accountExists: true,
-                lastFetched: new Date(),
-                expiresAt,
-              },
-              { upsert: true, new: true }
-            );
-          } catch (dbError) {
-            logger.warn(`Failed to save balance cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
-            // Continue even if DB save fails
-          }
-        }
-
-          logger.info(`✅ Successfully fetched balances for account ${publicKey} (${balances.length} assets)`);
-          return { publicKey, balances, cached: false, accountExists: true };
-        } catch (error: any) {
-          // If this is not the last server, try the next one
-          if (serverIndex < horizonServers.length - 1) {
-            logger.warn(`Failed to fetch from ${serverName} Horizon server, trying next server...`);
-            lastError = error;
-            continue; // Try next server
-          }
-          
-          // This was the last server, save error and break
-          lastError = error;
-          break; // Break out of server loop, will retry in next attempt
-        }
-      }
-      
-      // If we get here, all servers failed for this attempt
-      // Check if it's a "not found" error
-      const isNotFoundError =
-        lastError?.response?.status === 404 ||
-        lastError?.constructor?.name === 'NotFoundError' ||
-        (lastError?.response?.data?.type === 'https://stellar.org/horizon-errors/not_found') ||
-        (lastError?.response?.data?.status === 404) ||
-        (lastError?.message && (
-          lastError.message.toLowerCase().includes('account not found') ||
-          lastError.message.toLowerCase().includes('not found: account') ||
-          lastError.message === 'Not Found' ||
-          lastError.message.toLowerCase().includes('404')
-        ));
-      
-      // Log detailed error info for debugging
-      if (attempt === 1) {
-        const errorDetails = {
-          status: lastError?.response?.status,
-          errorType: lastError?.constructor?.name,
-          message: lastError?.message,
-          dataType: lastError?.response?.data?.type,
-          isNotFound: isNotFoundError,
-        };
-        logger.warn(`Error details for ${publicKey}: ${JSON.stringify(errorDetails)}`);
-      }
-
-      // If account not found, don't retry - cache and return empty balances
-      if (isNotFoundError) {
-        accountExists = false;
-        logger.info(`Account ${publicKey} not found on Pi network (attempt ${attempt})`);
-
-        // Cache "not found" status with longer TTL to reduce API calls
-        if (useCache) {
-          try {
-            const expiresAt = new Date(Date.now() + CACHE_TTL_NOT_FOUND_MS);
-            await BalanceCache.findOneAndUpdate(
-              { publicKey },
-              {
-                publicKey,
-                balances: [],
-                accountExists: false,
-                lastFetched: new Date(),
-                expiresAt,
-              },
-              { upsert: true, new: true }
-            );
-          } catch (dbError) {
-            logger.warn(`Failed to save "not found" cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
-          }
-        }
-
-        return { publicKey, balances: [], cached: false, accountExists: false };
-      }
-
-      // Log error only on first attempt
-      if (attempt === 1) {
-        const errorDetails = {
-          message: lastError?.message || String(lastError),
-          status: lastError?.response?.status,
-          errorType: lastError?.constructor?.name,
-          attempt,
-        };
-        logger.error(`Error fetching balances for account ${publicKey} from all Horizon servers (attempt ${attempt}/${maxRetries}):`, errorDetails);
-      }
-
-      // For other errors, retry with exponential backoff (only once)
-      if (attempt < maxRetries) {
-        const delay = Math.min(1000 * attempt, 3000); // Max 3 seconds
-        logger.warn(`Retrying balance fetch for ${publicKey} in ${delay}ms (attempt ${attempt}/${maxRetries})`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
-      }
-    }
-
-    // All retries failed - cache error with short TTL
+    // Get existing cached balances (even if expired) to preserve on failure
+    let existingCachedBalances: any = null;
     if (useCache) {
       try {
-        const expiresAt = new Date(Date.now() + CACHE_TTL_ERROR_MS);
-        await BalanceCache.findOneAndUpdate(
-          { publicKey },
-          {
-            publicKey,
-            balances: [],
-            accountExists: false, // Assume doesn't exist on error
-            lastFetched: new Date(),
-            expiresAt,
-          },
-          { upsert: true, new: true }
-        );
+        existingCachedBalances = await BalanceCache.findOne({ publicKey });
       } catch (dbError) {
-        logger.warn(`Failed to save error cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+        logger.warn(`Error reading from balance cache DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
       }
     }
 
-    logger.error(`❌ Failed to fetch balances for account ${publicKey} after ${maxRetries} attempts:`, lastError);
-    throw lastError;
+    // Check for valid (non-expired) cache first
+    if (useCache && !forceRefresh && existingCachedBalances) {
+      const isExpired = existingCachedBalances.expiresAt < new Date();
+      const cacheAge = Date.now() - existingCachedBalances.lastFetched.getTime();
+      const shouldRefreshStaleNotFound = existingCachedBalances.accountExists === false && cacheAge > 60000; // 1 minute
+      
+      if (!isExpired && !shouldRefreshStaleNotFound) {
+        logger.info(`Using cached balances for account ${publicKey} (from DB, expires: ${existingCachedBalances.expiresAt.toISOString()}, exists: ${existingCachedBalances.accountExists})`);
+        return { 
+          publicKey, 
+          balances: existingCachedBalances.balances,
+          cached: true,
+          accountExists: existingCachedBalances.accountExists 
+        };
+      }
+    }
+
+    // Fetch from Pi Horizon only (simplified - no fallbacks)
+    try {
+      logger.info(`Fetching balances from Pi Horizon for account ${publicKey}`);
+      
+      // Use Stellar SDK's loadAccount() - standard method
+      const account = await server.loadAccount(publicKey);
+
+      const THRESHOLD = 0.1;
+
+      const balances = (account.balances || [])
+        .map((b: any) => {
+          const amountNum =
+            typeof b.balance === 'string' ? parseFloat(b.balance) : Number(b.balance || 0);
+
+          let assetLabel: string;
+          if (b.asset_type === 'native') {
+            assetLabel = 'Test Pi';
+          } else if (b.asset_type === 'liquidity_pool_shares') {
+            assetLabel = `liquidity_pool:${b.liquidity_pool_id || 'unknown'}`;
+          } else {
+            assetLabel = `${b.asset_code}:${b.asset_issuer}`;
+          }
+
+          return {
+            assetType: b.asset_type,
+            assetCode: b.asset_code || 'XLM',
+            assetIssuer: b.asset_issuer || null,
+            asset: assetLabel,
+            amount: amountNum,
+            raw: b.balance,
+          };
+        })
+        .filter((entry: any) => {
+          if (Number.isNaN(entry.amount)) return false;
+          return entry.amount > THRESHOLD;
+        });
+
+      // Save to database cache
+      if (useCache) {
+        try {
+          const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
+          await BalanceCache.findOneAndUpdate(
+            { publicKey },
+            {
+              publicKey,
+              balances,
+              accountExists: true,
+              lastFetched: new Date(),
+              expiresAt,
+            },
+            { upsert: true, new: true }
+          );
+        } catch (dbError) {
+          logger.warn(`Failed to save balance cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+        }
+      }
+
+      logger.info(`✅ Successfully fetched balances for account ${publicKey} (${balances.length} assets)`);
+      return { publicKey, balances, cached: false, accountExists: true };
+      
+    } catch (error: any) {
+      // Check if it's a "not found" error
+      const isNotFoundError =
+        error?.response?.status === 404 ||
+        error?.constructor?.name === 'NotFoundError' ||
+        (error?.response?.data?.type === 'https://stellar.org/horizon-errors/not_found') ||
+        (error?.response?.data?.status === 404) ||
+        (error?.message && (
+          error.message.toLowerCase().includes('account not found') ||
+          error.message.toLowerCase().includes('not found: account') ||
+          error.message === 'Not Found' ||
+          error.message.toLowerCase().includes('404')
+        ));
+
+      if (isNotFoundError) {
+        // Account doesn't exist - only cache if we don't have existing balances
+        // If we have existing balances, it might be a temporary Horizon issue
+        if (!existingCachedBalances || existingCachedBalances.balances.length === 0) {
+          logger.info(`Account ${publicKey} not found on Pi network`);
+          
+          if (useCache) {
+            try {
+              const expiresAt = new Date(Date.now() + CACHE_TTL_NOT_FOUND_MS);
+              await BalanceCache.findOneAndUpdate(
+                { publicKey },
+                {
+                  publicKey,
+                  balances: [],
+                  accountExists: false,
+                  lastFetched: new Date(),
+                  expiresAt,
+                },
+                { upsert: true, new: true }
+              );
+            } catch (dbError) {
+              logger.warn(`Failed to save "not found" cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+            }
+          }
+          
+          return { publicKey, balances: [], cached: false, accountExists: false };
+        } else {
+          // We have existing balances - preserve them (might be temporary Horizon issue)
+          logger.warn(`Account ${publicKey} returned 404 but we have cached balances. Preserving existing balances. Error: ${error?.message || 'Not Found'}`);
+          return {
+            publicKey,
+            balances: existingCachedBalances.balances,
+            cached: true,
+            accountExists: existingCachedBalances.accountExists ?? true
+          };
+        }
+      }
+
+      // Other errors (network, timeout, etc.) - preserve existing balances if available
+      logger.warn(`Failed to fetch balances for account ${publicKey} from Pi Horizon: ${error?.message || String(error)}`);
+      
+      if (existingCachedBalances && existingCachedBalances.balances.length > 0) {
+        logger.info(`Preserving existing cached balances for account ${publicKey} due to fetch error`);
+        return {
+          publicKey,
+          balances: existingCachedBalances.balances,
+          cached: true,
+          accountExists: existingCachedBalances.accountExists ?? true
+        };
+      }
+
+      // No existing balances and fetch failed - return empty but don't cache as "not found"
+      // This allows retry on next request
+      logger.warn(`No cached balances available for account ${publicKey}, returning empty balances`);
+      return { publicKey, balances: [], cached: false, accountExists: null };
+    }
   }
 
   public async getOperations(params: OperationsQuery) {

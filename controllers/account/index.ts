@@ -28,18 +28,24 @@ export const importAccount = async (req: Request, res: Response) => {
 };
 
 export const getAccountBalance = async (req: Request, res: Response) => {
-    try {
-      const publicKey =
-        (typeof req.query.publicKey === 'string' && req.query.publicKey) ||
-        (typeof req.params.publicKey === 'string' && req.params.publicKey);
+    // Extract publicKey outside try block so it's available in catch block
+    const publicKey: string | undefined =
+      (typeof req.query.publicKey === 'string' && req.query.publicKey) ||
+      (typeof req.params.publicKey === 'string' && req.params.publicKey) ||
+      undefined;
 
-      if (!publicKey) {
-        return res.status(400).json({ message: 'publicKey is required' });
-      }
+    if (!publicKey) {
+      return res.status(400).json({ message: 'publicKey is required' });
+    }
+
+    // At this point, TypeScript knows publicKey is a string (not undefined)
+    const publicKeyString: string = publicKey;
+
+    try {
       const useCache = req.query.cache !== 'false';
       const forceRefresh = req.query.refresh === 'true';
 
-      const result = await accountService.getBalances(publicKey, useCache, forceRefresh);
+      const result = await accountService.getBalances(publicKeyString, useCache, forceRefresh);
       
       return res.status(200).json(result);
     } catch (err: any) {
@@ -51,10 +57,28 @@ export const getAccountBalance = async (req: Request, res: Response) => {
       });
       
  
-      const statusCode = err?.response?.status === 404 ? 200 : 500;
-      return res.status(statusCode).json({ 
-        message: 'Failed to fetch account balance', 
-        error: err?.response?.data || err?.message || String(err)
+      try {
+        const BalanceCache = require('../models/BalanceCache').default;
+        const cached = await BalanceCache.findOne({ publicKey: publicKeyString });
+        if (cached && cached.balances && cached.balances.length > 0) {
+          logger.info(`Returning cached balances due to error for account ${publicKeyString}`);
+          return res.status(200).json({
+            publicKey: publicKeyString,
+            balances: cached.balances,
+            cached: true,
+            accountExists: cached.accountExists ?? true
+          });
+        }
+      } catch (cacheError) {
+        // Ignore cache errors
+      }
+      
+      // No cached data available - return empty balances
+      return res.status(200).json({ 
+        publicKey: publicKeyString,
+        balances: [],
+        cached: false,
+        accountExists: null
       });
     }
   };
