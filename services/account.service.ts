@@ -27,10 +27,9 @@ export interface OperationsQuery {
   order?: 'asc' | 'desc';
 }
 
-// Cache configuration - longer TTL to reduce API calls and rate limiting
-const CACHE_TTL_MS = 300000; // 5 minutes for successful fetches
-const CACHE_TTL_NOT_FOUND_MS = 30000; // 30 seconds for "not found" accounts (very short to allow retry)
-const CACHE_TTL_ERROR_MS = 30000; // 30 seconds for errors
+const CACHE_TTL_MS = 300000; 
+const CACHE_TTL_NOT_FOUND_MS = 30000; 
+const CACHE_TTL_ERROR_MS = 30000; 
 
 export class AccountService {
   public async importAccount(input: ImportAccountInput) {
@@ -52,7 +51,6 @@ export class AccountService {
       secretKey = kp.secret();
     }
 
-    // If userId is provided, validate public key matches existing user's public_key
     if (userId) {
       const user = await User.findById(userId);
       if (user) {
@@ -62,7 +60,6 @@ export class AccountService {
           }
           logger.info(`Public key validated for user ${userId}`);
         } else {
-          // User exists but doesn't have public_key, store it
           user.public_key = publicKey;
           await user.save();
           logger.info(`Public key stored for user ${userId}`);
@@ -80,7 +77,6 @@ export class AccountService {
       throw new Error('publicKey is required');
     }
 
-    // Get existing cached balances (even if expired) to preserve on failure
     let existingCachedBalances: any = null;
     if (useCache) {
       try {
@@ -94,7 +90,7 @@ export class AccountService {
       const isNotFoundCache = existingCachedBalances.accountExists === false;
 
       const cacheAge = Date.now() - existingCachedBalances.lastFetched.getTime();
-      const shouldRetryNotFound = isNotFoundCache && cacheAge > 10000; // Retry after 10 seconds
+      const shouldRetryNotFound = isNotFoundCache && cacheAge > 10000; 
       
       if (!isExpired && !isNotFoundCache && !shouldRetryNotFound) {
         logger.info(`Using cached balances for account ${publicKey} (from DB, expires: ${existingCachedBalances.expiresAt.toISOString()}, exists: ${existingCachedBalances.accountExists})`);
@@ -106,7 +102,6 @@ export class AccountService {
         };
       }
       
-      // If it's a "not found" cache that's older than 10 seconds, log and retry
       if (isNotFoundCache && shouldRetryNotFound) {
         logger.info(`Retrying fetch for account ${publicKey} - previous "not found" cache is ${Math.round(cacheAge / 1000)}s old (account may exist now)`);
       }
@@ -161,8 +156,7 @@ export class AccountService {
             } catch (e) {
             }
           }
-          
-          // Use Stellar SDK's loadAccount() - standard method
+ 
           account = await currentServer.loadAccount(publicKey);
           
           serverSuccess = true;
@@ -173,7 +167,6 @@ export class AccountService {
         } catch (error: any) {
           lastError = error;
           
-          // Log detailed error information for debugging
           logger.error(`❌ Error fetching account ${publicKey} from ${serverName}:`, {
             message: error?.message || String(error),
             code: error?.code,
@@ -193,7 +186,7 @@ export class AccountService {
             error?.message?.toLowerCase().includes('timeout') ||
             error?.message?.toLowerCase().includes('network') ||
             error?.message?.toLowerCase().includes('connection') ||
-            (error?.response?.status >= 500 && error?.response?.status < 600); // 5xx server errors
+            (error?.response?.status >= 500 && error?.response?.status < 600); 
           
           const isNotFoundError =
             !isNetworkError && (
@@ -345,14 +338,11 @@ export class AccountService {
         logger.warn(`No cached balances available for account ${publicKey}, returning empty due to network error`);
         return { publicKey, balances: [], cached: false, accountExists: null };
         } else if (isNotFoundError) {
-          // If direct HTTP test confirmed account exists, this is likely a SDK issue
-          // Use the HTTP response data as fallback
           if (directHttpTest?.exists === true && directHttpTest?.accountData) {
             logger.error(`🚨 CRITICAL: Direct HTTP test confirms account EXISTS, but SDK returned 404! This indicates a SDK/connection issue, not account not found.`);
             logger.info(`Using HTTP response data as fallback since SDK failed but account exists`);
             
             try {
-              // Parse account data from HTTP response (same format as SDK would return)
               const httpAccountData = directHttpTest.accountData;
               
               const THRESHOLD = 0.1;
@@ -384,7 +374,6 @@ export class AccountService {
                   return entry.amount > THRESHOLD;
                 });
 
-              // Cache the balances from HTTP response
               if (useCache) {
                 try {
                   const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
@@ -409,7 +398,6 @@ export class AccountService {
             } catch (parseError: any) {
               logger.error(`Failed to parse account data from HTTP response: ${parseError?.message || String(parseError)}`);
               
-              // Fall back to cached balances if available
               if (existingCachedBalances && existingCachedBalances.balances.length > 0) {
                 logger.warn(`Preserving existing cached balances - account exists but SDK and HTTP parsing failed`);
                 return {
@@ -420,7 +408,6 @@ export class AccountService {
                 };
               }
               
-              // Return empty but don't mark as "not found"
               return { publicKey, balances: [], cached: false, accountExists: null };
             }
           }
@@ -486,8 +473,7 @@ export class AccountService {
 
       const ops = await builder.call();
       return this.formatOperations(ops.records, publicKey, limit, order);
-    } catch (error: any) {
-      // If SDK fails with 404, try HTTP fallback
+    } catch (error: any) {  
       const isNotFoundError =
         error?.response?.status === 404 ||
         error?.constructor?.name === 'NotFoundError' ||

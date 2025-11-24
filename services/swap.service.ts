@@ -4,6 +4,7 @@ import env from '../config/env';
 import { logger } from '../utils/logger';
 import { PoolService } from './liquidity-pools.service';
 import { AccountService } from './account.service';
+import axios from 'axios';
 
 const poolService = new PoolService();
 
@@ -14,12 +15,91 @@ class SwapService {
     this.accountService = new AccountService();
   }
 
+  /**
+   * Load account with HTTP fallback when SDK fails
+   * This is needed because SDK's loadAccount() sometimes returns 404 even when account exists
+   */
+  private async loadAccountWithFallback(publicKey: string): Promise<any> {
+    try {
+      return await server.loadAccount(publicKey);
+    } catch (error: any) {
+      const isNotFoundError =
+        error?.response?.status === 404 ||
+        error?.constructor?.name === 'NotFoundError' ||
+        (error?.response?.data?.type === 'https://stellar.org/horizon-errors/not_found') ||
+        (error?.response?.data?.status === 404) ||
+        (error?.message && (
+          error.message.toLowerCase().includes('not found') ||
+          error.message.toLowerCase().includes('404')
+        ));
+
+      if (isNotFoundError) {
+        logger.warn(`SDK failed to load account ${publicKey}, trying HTTP fallback...`);
+        try {
+          const horizonUrl = env.HORIZON_URL;
+          const accountUrl = `${horizonUrl}/accounts/${publicKey}`;
+          const response = await axios.get(accountUrl, { timeout: 10000 });
+          
+          if (response.status === 200 && response.data) {
+            logger.info(`✅ Successfully loaded account via HTTP fallback for ${publicKey}`);
+            // Convert HTTP response to SDK-like account object
+            // The SDK Account object has specific methods, but for TransactionBuilder we mainly need:
+            // - sequenceNumber (as string)
+            // - accountId (publicKey)
+            // Create a minimal account-like object
+            const accountData = response.data;
+            return {
+              accountId: () => publicKey,
+              sequenceNumber: () => accountData.sequence,
+              sequenceNumber_: accountData.sequence,
+              balances: accountData.balances || [],
+              // Add other properties that might be needed
+              ...accountData
+            };
+          }
+        } catch (httpError: any) {
+          logger.error(`HTTP fallback also failed for account ${publicKey}: ${httpError?.message || String(httpError)}`);
+        }
+      }
+      
+      // If all else fails, throw the original error
+      throw error;
+    }
+  }
+
+  /**
+   * Check if a pool is empty (has no liquidity)
+   */
+  private isPoolEmpty(pool: any): boolean {
+    if (!pool || !pool.reserves || pool.reserves.length < 2) {
+      return true;
+    }
+    
+    const [resA, resB] = pool.reserves;
+    const amountA = parseFloat(resA.amount || '0');
+    const amountB = parseFloat(resB.amount || '0');
+    const totalShares = parseFloat(pool.total_shares || '0');
+    
+    // Pool is empty if:
+    // - Total shares is 0 or very close to 0
+    // - OR both reserves are 0 or very close to 0
+    // - OR any reserve is 0 or very close to 0
+    const MIN_THRESHOLD = 0.0000001; // Very small threshold to account for floating point precision
+    
+    return (
+      totalShares < MIN_THRESHOLD ||
+      (amountA < MIN_THRESHOLD && amountB < MIN_THRESHOLD) ||
+      amountA < MIN_THRESHOLD ||
+      amountB < MIN_THRESHOLD
+    );
+  }
+
   private async ensureTrustline(userSecret: string, assetCode: string, issuer?: string) {
     if (assetCode === 'native' || !issuer) return;
 
     const user = StellarSdk.Keypair.fromSecret(userSecret);
     const publicKey = user.publicKey();
-    const account = await server.loadAccount(publicKey);
+    const account = await this.loadAccountWithFallback(publicKey);
 
     // Case-insensitive trustline check (Pi Network stores exact case, but we match case-insensitively)
     const assetCodeUpper = assetCode.toUpperCase();
@@ -66,6 +146,11 @@ class SwapService {
       logger.info(`🔹 Quoting swap from ${from.code} ➡ ${to.code} in pool ${poolId}`);
       const pool = await poolService.getLiquidityPoolById(poolId);
 
+      // Check if pool is empty
+      if (this.isPoolEmpty(pool)) {
+        throw new Error(`Pool ${poolId} is empty (has no liquidity). Cannot perform swap.`);
+      }
+
       const [resA, resB] = pool.reserves;
       const x = parseFloat(resA.amount);
       const y = parseFloat(resB.amount);
@@ -92,7 +177,7 @@ class SwapService {
 
       if (publicKey && from.code === 'native') {
         try {
-          const account = await server.loadAccount(publicKey);
+          const account = await this.loadAccountWithFallback(publicKey);
           const nativeBalance = account.balances.find((b: any) => b.asset_type === 'native');
           if (nativeBalance) {
             availableBalance = parseFloat(nativeBalance.balance);
@@ -160,6 +245,12 @@ class SwapService {
 
       // Get pool first to extract exact asset codes (with correct case)
       const pool = await poolService.getLiquidityPoolById(poolId);
+      
+      // Check if pool is empty
+      if (this.isPoolEmpty(pool)) {
+        throw new Error(`Pool ${poolId} is empty (has no liquidity). Cannot perform swap.`);
+      }
+      
       const [resA, resB] = pool.reserves;
       
       // Extract exact asset codes from pool reserves (preserves correct case from blockchain)
@@ -205,7 +296,7 @@ class SwapService {
         (inputAfterFee * outputReserve) / (inputReserve + inputAfterFee);
       const minDestAmount = (outputAmount * (1 - slippagePercent / 100)).toFixed(7);
 
-      const account = await server.loadAccount(publicKey);
+      const account = await this.loadAccountWithFallback(publicKey);
       const baseFee = await server.fetchBaseFee();
 
       // Validate balance before attempting swap
@@ -246,7 +337,12 @@ class SwapService {
           throw new Error(`No ${actualFromCode} balance found. You may need to establish a trustline first.`);
         }
       }
-      const finalAccount = await server.loadAccount(publicKey);
+      const finalAccount = await this.loadAccountWithFallback(publicKey);
+      
+      // Ensure we have the sequence number in the right format for TransactionBuilder
+      const sequenceNumber = typeof finalAccount.sequenceNumber === 'function' 
+        ? finalAccount.sequenceNumber() 
+        : (finalAccount.sequenceNumber_ || finalAccount.sequence);
       
       const tx = new StellarSdk.TransactionBuilder(finalAccount, {
         fee: baseFee.toString(),
@@ -353,7 +449,12 @@ class SwapService {
 
         if (cached) {
           logger.info(`Using cached pools for pair ${tokenA}/${tokenB} (from DB, expires: ${cached.expiresAt.toISOString()})`);
-          return { success: true, pools: cached.pools };
+          // Filter out empty pools from cache
+          const nonEmptyPools = (cached.pools || []).filter((pool: any) => !this.isPoolEmpty(pool));
+          if (nonEmptyPools.length < cached.pools.length) {
+            logger.info(`Filtered out ${cached.pools.length - nonEmptyPools.length} empty pools from cache`);
+          }
+          return { success: true, pools: nonEmptyPools };
         }
       } catch (dbError) {
         logger.warn(`Error reading from pool cache DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
@@ -372,6 +473,11 @@ class SwapService {
         totalFetched += result.records.length;
 
         for (const pool of result.records) {
+          // Skip empty pools
+          if (this.isPoolEmpty(pool)) {
+            continue;
+          }
+          
           const assets = pool.reserves.map((r: any) => {
             const assetStr = r.asset || "";
             if (assetStr === "native") return "native";
@@ -390,8 +496,14 @@ class SwapService {
         cursor = result.nextCursor;
         hasMore = !!cursor && result.records.length > 0;
 
-        if (matchedPools.length > 0) {
-          logger.success(`✅ Found ${matchedPools.length} pools containing ${tokenA}/${tokenB}`);
+        // Filter out empty pools from matched pools
+        const nonEmptyMatchedPools = matchedPools.filter((pool: any) => !this.isPoolEmpty(pool));
+        
+        if (nonEmptyMatchedPools.length > 0) {
+          if (nonEmptyMatchedPools.length < matchedPools.length) {
+            logger.info(`Filtered out ${matchedPools.length - nonEmptyMatchedPools.length} empty pools from matches`);
+          }
+          logger.success(`✅ Found ${nonEmptyMatchedPools.length} pools containing ${tokenA}/${tokenB}`);
           
           if (useCache) {
             try {
@@ -401,7 +513,7 @@ class SwapService {
                 { cacheKey },
                 {
                   cacheKey,
-                  pools: matchedPools,
+                  pools: nonEmptyMatchedPools,
                   lastFetched: new Date(),
                   expiresAt,
                 },
@@ -412,7 +524,7 @@ class SwapService {
             }
           }
           
-          return { success: true, pools: matchedPools };
+          return { success: true, pools: nonEmptyMatchedPools };
         }
       }
 
@@ -444,7 +556,9 @@ class SwapService {
           const cached = await PoolCache.findOne({ cacheKey });
           if (cached && cached.pools.length > 0) {
             logger.warn(`Pool fetch failed for pair ${tokenA}/${tokenB}, returning cached pools. Error: ${err?.message || String(err)}`);
-            return { success: true, pools: cached.pools };
+            // Filter out empty pools from cached results
+            const nonEmptyCachedPools = cached.pools.filter((pool: any) => !this.isPoolEmpty(pool));
+            return { success: true, pools: nonEmptyCachedPools };
           }
         } catch (cacheError) {
         }
@@ -547,7 +661,7 @@ class SwapService {
       logger.info(`🔹 Expected output: ${outputAmount.toFixed(7)} ${to.code}`);
       logger.info(`🔹 Min receive (after slippage): ${minDestAmount} ${to.code}`);
 
-      const account = await server.loadAccount(publicKey);
+      const account = await this.loadAccountWithFallback(publicKey);
       const baseFee = await server.fetchBaseFee();
 
       const tx = new StellarSdk.TransactionBuilder(account, {

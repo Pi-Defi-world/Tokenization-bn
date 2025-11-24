@@ -248,8 +248,31 @@ export class PoolService {
         }
       }
 
+      // Filter out empty pools (pools with no liquidity)
+      const nonEmptyPools = pools.records.filter((pool: any) => {
+        if (!pool || !pool.reserves || pool.reserves.length < 2) {
+          return false;
+        }
+        const [resA, resB] = pool.reserves;
+        const amountA = parseFloat(resA.amount || '0');
+        const amountB = parseFloat(resB.amount || '0');
+        const totalShares = parseFloat(pool.total_shares || '0');
+        const MIN_THRESHOLD = 0.0000001;
+        
+        return !(
+          totalShares < MIN_THRESHOLD ||
+          (amountA < MIN_THRESHOLD && amountB < MIN_THRESHOLD) ||
+          amountA < MIN_THRESHOLD ||
+          amountB < MIN_THRESHOLD
+        );
+      });
+
+      if (nonEmptyPools.length < pools.records.length) {
+        logger.info(`🔹 Filtered out ${pools.records.length - nonEmptyPools.length} empty pools`);
+      }
+
       return {
-        records: pools.records,
+        records: nonEmptyPools,
         nextCursor
       };
     } catch (err: any) {
