@@ -401,6 +401,12 @@ class SwapService {
         logger.warn(`Failed to clear balance cache after swap: ${err?.message || String(err)}`);
       });
       
+      // Clear transaction cache to show new transaction
+      const { transactionHistoryService } = require('./transaction-history.service');
+      transactionHistoryService.clearTransactionCache(publicKey).catch((err: any) => {
+        logger.warn(`Failed to clear transaction cache after swap: ${err?.message || String(err)}`);
+      });
+      
       const PoolCache = require('../models/PoolCache').default;
       PoolCache.deleteMany({}).catch((err: any) => {
         logger.warn(`Failed to clear pool cache after swap: ${err?.message || String(err)}`);
@@ -770,6 +776,12 @@ class SwapService {
 
       this.accountService.clearBalanceCache(publicKey).catch((err: any) => {
         logger.warn(`Failed to clear balance cache after swap: ${err?.message || String(err)}`);
+      });
+      
+      // Clear transaction cache to show new transaction
+      const { transactionHistoryService } = require('./transaction-history.service');
+      transactionHistoryService.clearTransactionCache(publicKey).catch((err: any) => {
+        logger.warn(`Failed to clear transaction cache after swap: ${err?.message || String(err)}`);
       });
       
       const PoolCache = require('../models/PoolCache').default;
