@@ -2,20 +2,14 @@ import StellarSdk from '@stellar/stellar-sdk';
 import env from './env';
 import { logger } from '../utils/logger';
 
-// Configure Pi Network Horizon Server with proper timeout and connection settings
-// Pi Network Horizon API may need longer timeouts and better connection handling
-const serverOptions = {
-  timeout: 30000, // 30 seconds timeout for requests
-  allowHttp: false, // Only HTTPS for Pi Network
-};
-
 // Primary server (default - Pi Network)
-export const server = new StellarSdk.Horizon.Server(env.HORIZON_URL, serverOptions);
+// Note: Stellar SDK Server constructor only accepts the Horizon URL
+export const server = new StellarSdk.Horizon.Server(env.HORIZON_URL);
 
 // Secondary server (fallback - Pi Network testnet, only if different from primary)
 const piTestnetUrl = env.horizon?.pi?.testnet || 'https://api.testnet.minepi.com';
 export const serverFallback = env.HORIZON_URL !== piTestnetUrl
-  ? new StellarSdk.Horizon.Server(piTestnetUrl, serverOptions)
+  ? new StellarSdk.Horizon.Server(piTestnetUrl)
   : server;
 
 export const getBalanceCheckServers = () => {

@@ -4,6 +4,8 @@ import User from '../models/User';
 import BalanceCache from '../models/BalanceCache';
 import { logger } from '../utils/logger';
 import * as StellarSdk from '@stellar/stellar-sdk';
+import env from '../config/env';
+import axios from 'axios';
 
 export interface ImportAccountInput {
   mnemonic?: string;
@@ -109,6 +111,34 @@ export class AccountService {
         logger.info(`Retrying fetch for account ${publicKey} - previous "not found" cache is ${Math.round(cacheAge / 1000)}s old (account may exist now)`);
       }
     }
+    
+    // First, try a direct HTTP test to verify account exists (bypasses SDK issues)
+    // This helps diagnose if it's a SDK problem or real 404
+    let directHttpTest: { exists: boolean; error?: any } | null = null;
+    try {
+      const horizonUrl = env.HORIZON_URL;
+      const testUrl = `${horizonUrl}/accounts/${publicKey}`;
+      logger.info(`🔍 Testing account existence via direct HTTP: ${testUrl}`);
+      
+      const response = await axios.get(testUrl, { 
+        timeout: 10000,
+        validateStatus: (status) => status < 500 // Don't throw on 404, only on server errors
+      });
+      
+      if (response.status === 200) {
+        directHttpTest = { exists: true };
+        logger.info(`✅ Direct HTTP test confirms account ${publicKey} EXISTS on Pi Network Horizon`);
+      } else if (response.status === 404) {
+        directHttpTest = { exists: false };
+        logger.warn(`⚠️ Direct HTTP test confirms account ${publicKey} does NOT exist (404)`);
+      } else {
+        logger.warn(`⚠️ Direct HTTP test returned unexpected status: ${response.status}`);
+      }
+    } catch (httpError: any) {
+      logger.warn(`Direct HTTP test failed (this is OK, will try SDK): ${httpError?.message || String(httpError)}`);
+      directHttpTest = { exists: false, error: httpError };
+    }
+    
     const servers = getBalanceCheckServers();
     let lastError: any = null;
     let account: any = null;
@@ -128,7 +158,16 @@ export class AccountService {
             logger.info(`Retrying ${serverName} for account ${publicKey} (retry ${retryCount}/${MAX_RETRIES_PER_SERVER - 1})`);
           } else {
             logger.info(`Fetching balances from ${serverName} for account ${publicKey} (attempt ${i + 1}/${servers.length})`);
+            // Log the Horizon URL being used for debugging
+            try {
+              const horizonUrl = (currentServer as any).serverURL?.toString() || env.HORIZON_URL;
+              logger.info(`Using Horizon URL: ${horizonUrl}`);
+            } catch (e) {
+              // Ignore if we can't access serverURL
+            }
           }
+          
+          // Use Stellar SDK's loadAccount() - standard method
           account = await currentServer.loadAccount(publicKey);
           
           serverSuccess = true;
@@ -138,6 +177,18 @@ export class AccountService {
           break;
         } catch (error: any) {
           lastError = error;
+          
+          // Log detailed error information for debugging
+          logger.error(`❌ Error fetching account ${publicKey} from ${serverName}:`, {
+            message: error?.message || String(error),
+            code: error?.code,
+            status: error?.response?.status,
+            statusText: error?.response?.statusText,
+            errorType: error?.constructor?.name,
+            responseData: error?.response?.data,
+            responseHeaders: error?.response?.headers,
+            url: error?.config?.url || error?.request?.path,
+          });
           
           const isNetworkError =
             error?.code === 'ECONNREFUSED' ||
@@ -298,30 +349,50 @@ export class AccountService {
         
         logger.warn(`No cached balances available for account ${publicKey}, returning empty due to network error`);
         return { publicKey, balances: [], cached: false, accountExists: null };
-      } else if (isNotFoundError) {
-        if (!existingCachedBalances || existingCachedBalances.balances.length === 0) {
-          logger.info(`Account ${publicKey} not found on any Pi Network Horizon server (tried ${servers.length} servers)`);
-          
-          if (useCache) {
-            try {
-              const expiresAt = new Date(Date.now() + CACHE_TTL_NOT_FOUND_MS);
-              await BalanceCache.findOneAndUpdate(
-                { publicKey },
-                {
-                  publicKey,
-                  balances: [],
-                  accountExists: false,
-                  lastFetched: new Date(),
-                  expiresAt,
-                },
-                { upsert: true, new: true }
-              );
-            } catch (dbError) {
-              logger.warn(`Failed to save "not found" cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+        } else if (isNotFoundError) {
+          // If direct HTTP test confirmed account exists, this is likely a SDK issue
+          if (directHttpTest?.exists === true) {
+            logger.error(`🚨 CRITICAL: Direct HTTP test confirms account EXISTS, but SDK returned 404! This indicates a SDK/connection issue, not account not found.`);
+            logger.error(`Account ${publicKey} exists on Pi Network but SDK cannot fetch it. This is a connectivity/SDK problem.`);
+            
+            // Don't cache as "not found" if HTTP test says it exists
+            if (existingCachedBalances && existingCachedBalances.balances.length > 0) {
+              logger.warn(`Preserving existing cached balances - account exists but SDK failed`);
+              return {
+                publicKey,
+                balances: existingCachedBalances.balances,
+                cached: true,
+                accountExists: true
+              };
             }
+            
+            // Return empty but don't mark as "not found"
+            return { publicKey, balances: [], cached: false, accountExists: null };
           }
           
-          return { publicKey, balances: [], cached: false, accountExists: false };
+          if (!existingCachedBalances || existingCachedBalances.balances.length === 0) {
+            logger.info(`Account ${publicKey} not found on any Pi Network Horizon server (tried ${servers.length} servers)`);
+            
+            if (useCache) {
+              try {
+                const expiresAt = new Date(Date.now() + CACHE_TTL_NOT_FOUND_MS);
+                await BalanceCache.findOneAndUpdate(
+                  { publicKey },
+                  {
+                    publicKey,
+                    balances: [],
+                    accountExists: false,
+                    lastFetched: new Date(),
+                    expiresAt,
+                  },
+                  { upsert: true, new: true }
+                );
+              } catch (dbError) {
+                logger.warn(`Failed to save "not found" cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+              }
+            }
+            
+            return { publicKey, balances: [], cached: false, accountExists: false };
         } else {
           logger.warn(`Account ${publicKey} returned 404 but we have cached balances. Preserving existing balances. Error: ${lastError?.message || 'Not Found'}`);
           return {
