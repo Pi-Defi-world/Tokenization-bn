@@ -410,7 +410,12 @@ class SwapService {
                 }
                 
                 // Create proper SDK Account object with correct sequence
-                finalAccount = new StellarSdk.Account(publicKey, httpSequence);
+                // Ensure sequence is a string (Stellar SDK expects string)
+                const sequenceStr = String(httpSequence);
+                finalAccount = new StellarSdk.Account(publicKey, sequenceStr);
+                
+                // Log the account object details for debugging
+                logger.info(`Created Account object from HTTP fallback: sequence=${sequenceStr}, publicKey=${publicKey}`);
                 break;
               }
             } catch (httpError: any) {
@@ -485,26 +490,44 @@ class SwapService {
         logger.info(`🔹 Transaction sequence: ${finalAccount.sequenceNumber()}`);
         res = await server.submitTransaction(tx);
       } catch (submitError: any) {
-        // Log detailed error information
-        logger.error(`❌ Transaction submission failed:`, submitError);
-        if (submitError?.response?.data) {
-          logger.error(`Response data:`, submitError.response.data);
-          if (submitError.response.data.extras) {
-            logger.error(`Extras:`, submitError.response.data.extras);
-            if (submitError.response.data.extras.result_codes) {
-              logger.error(`Result codes:`, submitError.response.data.extras.result_codes);
-            }
-            if (submitError.response.data.extras.invalid_field) {
-              logger.error(`Invalid field:`, submitError.response.data.extras.invalid_field);
-            }
-            if (submitError.response.data.extras.reason) {
-              logger.error(`Reason:`, submitError.response.data.extras.reason);
+        // Log detailed error information BEFORE logger simplification
+        logger.error(`❌ Transaction submission failed`);
+        
+        // Log full error details (bypassing logger simplification for critical errors)
+        console.error('=== TRANSACTION SUBMISSION ERROR DETAILS ===');
+        console.error('Error message:', submitError?.message || 'Unknown error');
+        console.error('Error type:', submitError?.name || typeof submitError);
+        
+        if (submitError?.response) {
+          console.error('Response status:', submitError.response.status);
+          console.error('Response statusText:', submitError.response.statusText);
+          
+          if (submitError.response.data) {
+            console.error('Response data:', JSON.stringify(submitError.response.data, null, 2));
+            
+            if (submitError.response.data.extras) {
+              console.error('Extras:', JSON.stringify(submitError.response.data.extras, null, 2));
+              
+              if (submitError.response.data.extras.result_codes) {
+                console.error('Result codes:', JSON.stringify(submitError.response.data.extras.result_codes, null, 2));
+                console.error('Transaction result:', submitError.response.data.extras.result_codes.transaction);
+                console.error('Operation results:', submitError.response.data.extras.result_codes.operations);
+              }
+              
+              if (submitError.response.data.extras.invalid_field) {
+                console.error('Invalid field:', submitError.response.data.extras.invalid_field);
+              }
+              
+              if (submitError.response.data.extras.reason) {
+                console.error('Reason:', submitError.response.data.extras.reason);
+              }
             }
           }
         }
-        if (submitError?.response?.status) {
-          logger.error(`HTTP Status: ${submitError.response.status}`);
-        }
+        
+        // Also use logger for simplified view
+        logger.error(`Transaction submission error:`, submitError);
+        
         throw submitError;
       }
 
@@ -597,7 +620,43 @@ class SwapService {
         throw enhancedError;
       }
 
-      logger.error(`❌ swapWithPool failed:`, err);
+      // Log detailed error information BEFORE logger simplification
+      logger.error(`❌ swapWithPool failed`);
+      
+      // Log full error details (bypassing logger simplification for critical errors)
+      console.error('=== SWAP WITH POOL ERROR DETAILS ===');
+      console.error('Error message:', err?.message || 'Unknown error');
+      console.error('Error type:', err?.name || typeof err);
+      
+      if (err?.response) {
+        console.error('Response status:', err.response.status);
+        console.error('Response statusText:', err.response.statusText);
+        
+        if (err.response.data) {
+          console.error('Response data:', JSON.stringify(err.response.data, null, 2));
+          
+          if (err.response.data.extras) {
+            console.error('Extras:', JSON.stringify(err.response.data.extras, null, 2));
+            
+            if (err.response.data.extras.result_codes) {
+              console.error('Result codes:', JSON.stringify(err.response.data.extras.result_codes, null, 2));
+              console.error('Transaction result:', err.response.data.extras.result_codes.transaction);
+              console.error('Operation results:', err.response.data.extras.result_codes.operations);
+            }
+            
+            if (err.response.data.extras.invalid_field) {
+              console.error('Invalid field:', err.response.data.extras.invalid_field);
+            }
+            
+            if (err.response.data.extras.reason) {
+              console.error('Reason:', err.response.data.extras.reason);
+            }
+          }
+        }
+      }
+      
+      // Also use logger for simplified view
+      logger.error(`swapWithPool error:`, err);
       throw err;
     }
   }
