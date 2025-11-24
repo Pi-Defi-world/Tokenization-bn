@@ -2,6 +2,7 @@ import { platformAPIClient } from "../config/platiform.config";
 import User from "../models/User";
 import { IAuthResult, IUser } from "../types";
 import { logger } from "../utils/logger";
+import { AccountService } from "./account.service";
 import { jwtService } from "./jwt.service";
 
 interface IAuthResponse {
@@ -10,6 +11,12 @@ interface IAuthResponse {
 }
 
 class UsersService {
+  private accountService: AccountService;
+
+  constructor() {
+    this.accountService = new AccountService();
+  }
+
   async signInUser(authResult: IAuthResult): Promise<IAuthResponse> {
     try {
      const dd=  await platformAPIClient.get("/v2/me", {
@@ -56,6 +63,14 @@ class UsersService {
         id: plainUser.id,
         username: plainUser.username,
       });
+
+      // Refresh balance in background if user has a public key
+      // This ensures fresh balance on login without blocking the response
+      if (plainUser.public_key && plainUser.public_key.trim() !== '') {
+        this.accountService.refreshBalancesInBackground(plainUser.public_key).catch((error) => {
+          logger.warn(`Background balance refresh on login failed for ${plainUser.public_key}: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
 
       return {
         user: plainUser,

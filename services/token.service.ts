@@ -5,6 +5,7 @@ import { logger } from "../utils/logger";
 import Token from "../models/Token";
 import { ICreateTokenPayload } from "../types";
 import axios from "axios";
+import { AccountService } from "./account.service";
 
 export interface MintTokenParams {
   distributorSecret: string;
@@ -15,6 +16,12 @@ export interface MintTokenParams {
 }
 
 class TokenService {
+  private accountService: AccountService;
+
+  constructor() {
+    this.accountService = new AccountService();
+  }
+
   async establishTrustline(
     userSecret: string,
     assetCode: string,
@@ -276,6 +283,13 @@ class TokenService {
       });
 
       logger.success(`✅ Token saved to database - ID: ${token._id}`);
+
+      // Clear balance cache for distributor to reflect new token balance
+      // This ensures the user sees their new token balance immediately
+      this.accountService.clearBalanceCache(distributorPublicKey).catch((error) => {
+        logger.warn(`Failed to clear balance cache after token mint: ${error instanceof Error ? error.message : String(error)}`);
+      });
+
       return token;
     } catch (err: any) {
       logger.error("❌ Error in mintToken");

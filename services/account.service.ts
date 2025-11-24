@@ -25,10 +25,10 @@ export interface OperationsQuery {
   order?: 'asc' | 'desc';
 }
 
-// Cache configuration
-const CACHE_TTL_MS = 60000; // 1 minute for successful fetches
-const CACHE_TTL_NOT_FOUND_MS = 300000; // 5 minutes for "not found" accounts (to reduce API calls)
-const CACHE_TTL_ERROR_MS = 10000; // 10 seconds for errors (retry sooner)
+// Cache configuration - longer TTL to reduce API calls and rate limiting
+const CACHE_TTL_MS = 300000; // 5 minutes for successful fetches (reduced from 1 minute)
+const CACHE_TTL_NOT_FOUND_MS = 600000; // 10 minutes for "not found" accounts (reduced from 5 minutes)
+const CACHE_TTL_ERROR_MS = 30000; // 30 seconds for errors (increased from 10 seconds)
 
 export class AccountService {
   public async importAccount(input: ImportAccountInput) {
@@ -474,25 +474,12 @@ export class AccountService {
   }
 
   // Background refresh for a specific account (non-blocking)
+  // This method forces a refresh even if cached, useful for:
+  // - User login (to get fresh balance)
+  // - After transactions (to reflect changes)
   public async refreshBalancesInBackground(publicKey: string) {
-    // Check cache first - don't refresh if account is known to not exist
-    try {
-      const cached = await BalanceCache.findOne({ 
-        publicKey,
-        expiresAt: { $gt: new Date() }
-      });
-      
-      // If account is cached as not existing, skip background refresh
-      if (cached && cached.accountExists === false) {
-        logger.info(`Skipping background refresh for ${publicKey} - account cached as not existing`);
-        return;
-      }
-    } catch (dbError) {
-      // If cache check fails, proceed with refresh anyway
-      logger.warn(`Failed to check cache before background refresh: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
-    }
-    
     // Don't await - let it run in background
+    // Force refresh to bypass cache and get fresh data
     this.getBalances(publicKey, true, true).catch((error) => {
       logger.warn(`Background balance refresh failed for ${publicKey}: ${error instanceof Error ? error.message : String(error)}`);
     });
