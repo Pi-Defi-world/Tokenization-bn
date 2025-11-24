@@ -13,9 +13,6 @@ const shouldLog = (level: 'info' | 'warn' | 'error' | 'success') => {
   return true;
 };
 
-/**
- * Simplify Axios response/error objects for cleaner logging
- */
 const simplifyAxiosObject = (obj: any): any => {
   if (!obj || typeof obj !== 'object') {
     return obj;

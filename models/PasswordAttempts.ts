@@ -20,7 +20,7 @@ const passwordAttemptsSchema = new Schema<IPasswordAttempts>({
 
 // Indexes for better query performance
 passwordAttemptsSchema.index({ userId: 1 });
-passwordAttemptsSchema.index({ publicKey: 1 }, { unique: true });
+// Note: publicKey already has a unique index from unique: true in the schema definition
 
 const PasswordAttempts = mongoose.model<IPasswordAttempts>('PasswordAttempts', passwordAttemptsSchema);
 

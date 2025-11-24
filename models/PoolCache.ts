@@ -32,8 +32,8 @@ const poolCacheSchema = new Schema<IPoolCache>({
 poolCacheSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 // Compound indexes for common query patterns (optimized for performance)
+// Note: cacheKey already has a unique index from unique: true, so we only add compound indexes
 poolCacheSchema.index({ cacheKey: 1, expiresAt: 1 }); // For cache lookups (most common query)
-poolCacheSchema.index({ cacheKey: 1 }); // Unique index for fast lookups (already unique, but explicit index helps)
 
 const PoolCache = mongoose.model<IPoolCache>('PoolCache', poolCacheSchema);
 

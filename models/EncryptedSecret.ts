@@ -22,7 +22,7 @@ const encryptedSecretSchema = new Schema<IEncryptedSecret>({
 
 // Indexes for better query performance
 encryptedSecretSchema.index({ userId: 1 });
-encryptedSecretSchema.index({ publicKey: 1 }, { unique: true });
+// Note: publicKey already has a unique index from unique: true in the schema definition
 
 const EncryptedSecret = mongoose.model<IEncryptedSecret>('EncryptedSecret', encryptedSecretSchema);
 
