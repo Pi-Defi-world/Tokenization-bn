@@ -24,7 +24,6 @@ const userSchema = new Schema<IUser>({
   timestamps: true
 });
 
-// Index for public_key lookups (sparse index allows null values)
 userSchema.index({ public_key: 1 }, { sparse: true, unique: true });
 
 const User = mongoose.model<IUser>('User', userSchema);

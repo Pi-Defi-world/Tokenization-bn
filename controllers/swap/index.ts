@@ -128,7 +128,8 @@ export const getPoolsForPair = async (req: Request, res: Response) => {
 
     logger.info(`🔹 Fetching pools for ${tokenA}/${tokenB}`);
 
-    const result = await swapService.getPoolsForPair(tokenA as string, tokenB as string, 50);
+    const useCache = req.query.cache !== 'false';
+    const result = await swapService.getPoolsForPair(tokenA as string, tokenB as string, 50, useCache);
     res.json(result);
   } catch (err: any) {
     logger.error('❌ getPoolsForPair failed:', err);

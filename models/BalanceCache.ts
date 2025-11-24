@@ -3,7 +3,7 @@ import mongoose, { Schema, Document } from 'mongoose';
 export interface IBalanceCache extends Document {
   publicKey: string;
   balances: any[];
-  accountExists: boolean; // Track if account exists on network
+  accountExists: boolean; 
   lastFetched: Date;
   expiresAt: Date;
   createdAt: Date;

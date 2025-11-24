@@ -87,8 +87,9 @@ export const listLiquidityPools = async (req: Request, res: Response) => {
   try {
     const limit = req.query.limit ? Number(req.query.limit) : 10;
     const cursor = req.query.cursor ? String(req.query.cursor) : undefined;
+    const useCache = req.query.cache !== 'false';
 
-    const result = await poolService.getLiquidityPools(limit, cursor);
+    const result = await poolService.getLiquidityPools(limit, cursor, useCache);
 
     return res.status(200).json({
       data: result.records,

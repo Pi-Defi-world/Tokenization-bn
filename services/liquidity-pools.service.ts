@@ -2,6 +2,7 @@ import * as StellarSdk from '@stellar/stellar-sdk';
 import { server, getAsset } from '../config/stellar';
 import env from '../config/env';
 import { logger } from '../utils/logger';
+import PoolCache from '../models/PoolCache';
 
 export class PoolService {
   private async ensureTrustline(userSecret: string, assetCode: string, issuer: string) {
@@ -154,6 +155,11 @@ export class PoolService {
       logger.info(`🔹 Pool ID: ${poolId}`);
       logger.info(`🔹 TX hash: ${result.hash}`);
 
+      // Clear pool cache after creating a new pool
+      PoolCache.deleteMany({}).catch((err: any) => {
+        logger.warn(`Failed to clear pool cache after pool creation: ${err?.message || String(err)}`);
+      });
+
       return {
         poolId,
         liquidityTxHash: result.hash,
@@ -165,10 +171,39 @@ export class PoolService {
     }
   }
 
-  public async getLiquidityPools(limit: number = 10, cursor?: string) {
+  public async getLiquidityPools(limit: number = 10, cursor?: string, useCache: boolean = true) {
+    // Cache key for all pools (without cursor for first page)
+    const cacheKey = cursor ? `all-pools-cursor:${cursor}` : 'all-pools';
+    const CACHE_TTL_MS = 300000; // 5 minutes
+
+    // Check cache first
+    if (useCache && !cursor) {
+      try {
+        const cached = await PoolCache.findOne({ 
+          cacheKey: 'all-pools',
+          expiresAt: { $gt: new Date() }
+        });
+
+        if (cached) {
+          logger.info(`Using cached pools (from DB, expires: ${cached.expiresAt.toISOString()})`);
+          return {
+            records: cached.pools,
+            nextCursor: undefined // Don't paginate cached data
+          };
+        }
+      } catch (dbError) {
+        logger.warn(`Error reading from pool cache DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+      }
+    }
+
     try {
       let builder = server.liquidityPools().limit(limit);
-      if (cursor) builder = builder.cursor(cursor);
+      // Only use cursor if it's a valid paging token (not a transaction hash)
+      // Cursor should be a base64-encoded string, not a hex transaction hash
+      if (cursor && cursor.length > 0 && !cursor.match(/^[0-9a-f]{64}$/i)) {
+        // Only set cursor if it doesn't look like a transaction hash
+        builder = builder.cursor(cursor);
+      }
 
       const pools = await builder.call();
 
@@ -185,17 +220,59 @@ export class PoolService {
         );
       });
 
-      logger.info(`🔹 Next page function available via pools.next()`);
+      // Get next cursor from the response links, not from paging_token
+      let nextCursor: string | undefined = undefined;
+      try {
+        // Check if there's a next page in the response
+        if (pools.records.length === limit) {
+          // Use the last record's ID as cursor (safer than paging_token)
+          const lastRecord = pools.records[pools.records.length - 1];
+          nextCursor = lastRecord?.id;
+        }
+      } catch (e) {
+        // Ignore cursor extraction errors
+      }
 
-      const lastRecord = pools.records[pools.records.length - 1];
-      // Horizon responses typically expose paging_token on each record
-      const nextCursor = lastRecord?.paging_token as string | undefined;
+      // Cache the results (only cache first page without cursor)
+      if (useCache && !cursor) {
+        try {
+          const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
+          await PoolCache.findOneAndUpdate(
+            { cacheKey: 'all-pools' },
+            {
+              cacheKey: 'all-pools',
+              pools: pools.records,
+              lastFetched: new Date(),
+              expiresAt,
+            },
+            { upsert: true, new: true }
+          );
+        } catch (dbError) {
+          logger.warn(`Failed to save pool cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+        }
+      }
 
       return {
         records: pools.records,
         nextCursor
       };
     } catch (err: any) {
+      // If fetch fails, try to return cached data
+      if (useCache && !cursor) {
+        try {
+          const cached = await PoolCache.findOne({ cacheKey: 'all-pools' });
+          if (cached && cached.pools.length > 0) {
+            logger.warn(`Pool fetch failed, returning cached pools. Error: ${err?.message || String(err)}`);
+            return {
+              records: cached.pools,
+              nextCursor: undefined
+            };
+          }
+        } catch (cacheError) {
+          // Ignore cache errors
+        }
+      }
+      
       logger.error('❌ Error fetching liquidity pools:', JSON.stringify(err.response?.data || err, null, 2));
       throw err;
     }
@@ -262,6 +339,12 @@ export class PoolService {
       tx.sign(user);
       const result = await server.submitTransaction(tx);
       logger.success(`✅ Added liquidity successfully`);
+      
+      // Clear pool cache after adding liquidity
+      PoolCache.deleteMany({}).catch((err: any) => {
+        logger.warn(`Failed to clear pool cache after adding liquidity: ${err?.message || String(err)}`);
+      });
+      
       return { hash: result.hash };
     } catch (err: any) {
       logger.error('❌ Error adding liquidity:', JSON.stringify(err.response?.data || err, null, 2));
@@ -302,6 +385,12 @@ export class PoolService {
       tx.sign(user);
       const result = await server.submitTransaction(tx);
       logger.success(`💧 Liquidity withdrawn successfully`);
+      
+      // Clear pool cache after removing liquidity
+      PoolCache.deleteMany({}).catch((err: any) => {
+        logger.warn(`Failed to clear pool cache after removing liquidity: ${err?.message || String(err)}`);
+      });
+      
       return { hash: result.hash };
     } catch (err: any) {
       logger.error('❌ Error removing liquidity:', JSON.stringify(err.response?.data || err, null, 2));

@@ -13,8 +13,8 @@ export function getAssetFromCodeIssuer(input: string | { code: string; issuer?: 
     if (s.includes(":")) {
       const [code, issuer] = s.split(":");
       if (!issuer) throw new Error("issuer required for non-native asset");
-      // Preserve original case - Stellar asset codes are case-sensitive and must match exactly what's on the network
-      // The Stellar SDK and Horizon API will handle the matching correctly
+      // Preserve original case - Pi Network asset codes are case-sensitive and must match exactly what's on the network
+      // The SDK and Horizon API will handle the matching correctly
       return new StellarSdk.Asset(code.trim(), issuer.trim());
     }
     
@@ -22,7 +22,7 @@ export function getAssetFromCodeIssuer(input: string | { code: string; issuer?: 
   } else {
     if (input.code === "native" || input.code.toLowerCase() === "native") return StellarSdk.Asset.native();
     if (!input.issuer) throw new Error("issuer required for non-native asset object");
-    // Preserve original case - Stellar asset codes are case-sensitive
+    // Preserve original case - Pi Network asset codes are case-sensitive
     return new StellarSdk.Asset(input.code.trim(), input.issuer.trim());
   }
 }

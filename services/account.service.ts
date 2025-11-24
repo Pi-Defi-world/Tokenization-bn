@@ -130,7 +130,7 @@ export class AccountService {
 
           return {
             assetType: b.asset_type,
-            assetCode: b.asset_code || 'XLM',
+            assetCode: b.asset_code || 'Test Pi',
             assetIssuer: b.asset_issuer || null,
             asset: assetLabel,
             amount: amountNum,

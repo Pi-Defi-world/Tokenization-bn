@@ -121,7 +121,7 @@ export const burnTokens = async (req: Request, res: Response) => {
 
     const result = await tokenService.burnToken({ assetCode, amount, holderSecret,issuer });
     return res.status(200).json({
-      message: 'Token burned successfully on Stellar',
+      message: 'Token burned successfully on Pi Network',
       txHash: result.hash,
     });
   } catch (error: any) {

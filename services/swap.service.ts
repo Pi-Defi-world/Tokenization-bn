@@ -21,7 +21,7 @@ class SwapService {
     const publicKey = user.publicKey();
     const account = await server.loadAccount(publicKey);
 
-    // Case-insensitive trustline check (Stellar stores exact case, but we match case-insensitively)
+    // Case-insensitive trustline check (Pi Network stores exact case, but we match case-insensitively)
     const assetCodeUpper = assetCode.toUpperCase();
     const exists = account.balances.some(
       (b: any) => b.asset_code && b.asset_code.toUpperCase() === assetCodeUpper && b.asset_issuer === issuer
@@ -96,16 +96,16 @@ class SwapService {
           const nativeBalance = account.balances.find((b: any) => b.asset_type === 'native');
           if (nativeBalance) {
             availableBalance = parseFloat(nativeBalance.balance);
-            // Account for transaction fee (typically 100 stroops = 0.00001 XLM/Test Pi)
-            // And minimum reserve (typically 1 XLM/Test Pi for base account)
+            // Account for transaction fee (0.01 Test Pi)
+            // And minimum reserve (typically 1 Test Pi for base account)
             const baseFee = await server.fetchBaseFee();
-            const feeInXLM = baseFee / 10000000; // Convert stroops to XLM
+            const feeInPi = baseFee / 10000000; // Convert stroops to Test Pi
             const minReserve = 1.0; // Minimum reserve requirement
-            const totalRequired = input + feeInXLM + minReserve;
+            const totalRequired = input + feeInPi + minReserve;
             
             if (availableBalance < totalRequired) {
               isSufficient = false;
-              balanceError = `Insufficient balance. Available: ${availableBalance.toFixed(7)} ${from.code}, Required: ${input.toFixed(7)} + ${feeInXLM.toFixed(7)} (fee) + ${minReserve.toFixed(7)} (reserve) = ${totalRequired.toFixed(7)}`;
+              balanceError = `Insufficient balance. Available: ${availableBalance.toFixed(7)} ${from.code}, Required: ${input.toFixed(7)} + ${feeInPi.toFixed(7)} (fee) + ${minReserve.toFixed(7)} (reserve) = ${totalRequired.toFixed(7)}`;
             }
           }
         } catch (err: any) {
@@ -172,7 +172,7 @@ class SwapService {
       const fromCodeUpper = fromCode === "native" ? "native" : fromCode.toUpperCase();
       const isAtoB = resAAssetCode === fromCodeUpper;
       
-      // Use exact asset codes from pool reserves (correct case) for Stellar SDK
+      // Use exact asset codes from pool reserves (correct case) for Pi Network SDK
       const actualFromAsset = isAtoB ? resAAssetFull : resBAssetFull;
       const actualToAsset = isAtoB ? resBAssetFull : resAAssetFull;
       
@@ -213,14 +213,14 @@ class SwapService {
         const nativeBalance = account.balances.find((b: any) => b.asset_type === 'native');
         if (nativeBalance) {
           const availableBalance = parseFloat(nativeBalance.balance);
-          const feeInXLM = baseFee / 10000000; // Convert stroops to XLM
+          const feeInPi = baseFee / 10000000; // Convert stroops to Test Pi
           const minReserve = 1.0; // Minimum reserve requirement
-          const totalRequired = input + feeInXLM + minReserve;
+          const totalRequired = input + feeInPi + minReserve;
 
-          logger.info(`💰 Balance check: Available: ${availableBalance.toFixed(7)} ${fromCode}, Required: ${input.toFixed(7)} (amount) + ${feeInXLM.toFixed(7)} (fee) + ${minReserve.toFixed(7)} (reserve) = ${totalRequired.toFixed(7)}`);
+          logger.info(`💰 Balance check: Available: ${availableBalance.toFixed(7)} ${fromCode}, Required: ${input.toFixed(7)} (amount) + ${feeInPi.toFixed(7)} (fee) + ${minReserve.toFixed(7)} (reserve) = ${totalRequired.toFixed(7)}`);
 
           if (availableBalance < totalRequired) {
-            const errorMsg = `Insufficient balance. Available: ${availableBalance.toFixed(7)} ${fromCode === 'native' ? 'Test Pi' : fromCode}, Required: ${totalRequired.toFixed(7)} (including ${feeInXLM.toFixed(7)} fee and ${minReserve.toFixed(7)} reserve)`;
+            const errorMsg = `Insufficient balance. Available: ${availableBalance.toFixed(7)} ${fromCode === 'native' ? 'Test Pi' : fromCode}, Required: ${totalRequired.toFixed(7)} (including ${feeInPi.toFixed(7)} fee and ${minReserve.toFixed(7)} reserve)`;
             logger.error(`❌ ${errorMsg}`);
             throw new Error(errorMsg);
           }
@@ -228,8 +228,7 @@ class SwapService {
           throw new Error(`No ${fromCode === 'native' ? 'Test Pi' : fromCode} balance found`);
         }
       } else {
-        // For non-native assets, check trustline balance
-        // Case-insensitive balance check (Stellar stores exact case, but we match case-insensitively)
+
         const actualFromCodeUpper = actualFromCode.toUpperCase();
         const assetBalance = account.balances.find(
           (b: any) => b.asset_code && b.asset_code.toUpperCase() === actualFromCodeUpper && b.asset_issuer === actualFromIssuer
@@ -247,8 +246,9 @@ class SwapService {
           throw new Error(`No ${actualFromCode} balance found. You may need to establish a trustline first.`);
         }
       }
-
-      const tx = new StellarSdk.TransactionBuilder(account, {
+      const finalAccount = await server.loadAccount(publicKey);
+      
+      const tx = new StellarSdk.TransactionBuilder(finalAccount, {
         fee: baseFee.toString(),
         networkPassphrase: env.NETWORK,
       })
@@ -272,10 +272,14 @@ class SwapService {
       logger.success(`✅ Swap successful! TX: ${res.hash}`);
       logger.info(`⏱ Duration: ${(Date.now() - start) / 1000}s`);
       logger.info(`----------------------------------------------`);
-
- 
+        
       this.accountService.clearBalanceCache(publicKey).catch((err: any) => {
         logger.warn(`Failed to clear balance cache after swap: ${err?.message || String(err)}`);
+      });
+      
+      const PoolCache = require('../models/PoolCache').default;
+      PoolCache.deleteMany({}).catch((err: any) => {
+        logger.warn(`Failed to clear pool cache after swap: ${err?.message || String(err)}`);
       });
 
       return {
@@ -284,14 +288,12 @@ class SwapService {
         expectedOutput: outputAmount.toFixed(7),
       };
     } catch (err: any) {
-      // Handle transaction failure (400 Bad Request)
       if (err?.response?.status === 400 && err?.response?.data) {
         const errorData = err.response.data;
         const resultCodes = errorData.extras?.result_codes;
         const operationsResultCodes = resultCodes?.operations || [];
         const transactionResultCode = resultCodes?.transaction || 'unknown';
 
-        // Build detailed error message
         let errorMessage = 'Transaction failed';
         
         if (transactionResultCode === 'tx_failed') {
@@ -333,13 +335,31 @@ class SwapService {
         throw enhancedError;
       }
 
-      // Re-throw other errors
       logger.error(`❌ swapWithPool failed:`, JSON.stringify(err.response?.data || err, null, 2));
       throw err;
     }
   }
 
-  public async getPoolsForPair(tokenA: string, tokenB: string, limit: number = 50) {
+  public async getPoolsForPair(tokenA: string, tokenB: string, limit: number = 50, useCache: boolean = true) {
+    const cacheKey = `pair:${tokenA.toUpperCase()}:${tokenB.toUpperCase()}`;
+    const CACHE_TTL_MS = 300000; // 5 minutes
+
+    if (useCache) {
+      try {
+        const cached = await require('../models/PoolCache').default.findOne({ 
+          cacheKey,
+          expiresAt: { $gt: new Date() }
+        });
+
+        if (cached) {
+          logger.info(`Using cached pools for pair ${tokenA}/${tokenB} (from DB, expires: ${cached.expiresAt.toISOString()})`);
+          return { success: true, pools: cached.pools };
+        }
+      } catch (dbError) {
+        logger.warn(`Error reading from pool cache DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+      }
+    }
+
     try {
       logger.info(`🔹 Searching pools for pair: ${tokenA}/${tokenB}`);
       let cursor: string | undefined = undefined;
@@ -348,7 +368,7 @@ class SwapService {
       let hasMore = true;
 
       while (hasMore) {
-        const result = await poolService.getLiquidityPools(limit, cursor);
+        const result = await poolService.getLiquidityPools(limit, cursor, useCache);
         totalFetched += result.records.length;
 
         for (const pool of result.records) {
@@ -357,7 +377,6 @@ class SwapService {
             if (assetStr === "native") return "native";
             return assetStr.split(':')[0];
           });
-          // Case-insensitive comparison
           const tokenAUpper = tokenA === "native" ? "native" : tokenA.toUpperCase();
           const tokenBUpper = tokenB === "native" ? "native" : tokenB.toUpperCase();
           const assetsUpper = assets.map((a: string) => a === "native" ? "native" : a.toUpperCase());
@@ -373,13 +392,64 @@ class SwapService {
 
         if (matchedPools.length > 0) {
           logger.success(`✅ Found ${matchedPools.length} pools containing ${tokenA}/${tokenB}`);
+          
+          if (useCache) {
+            try {
+              const PoolCache = require('../models/PoolCache').default;
+              const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
+              await PoolCache.findOneAndUpdate(
+                { cacheKey },
+                {
+                  cacheKey,
+                  pools: matchedPools,
+                  lastFetched: new Date(),
+                  expiresAt,
+                },
+                { upsert: true, new: true }
+              );
+            } catch (dbError) {
+              logger.warn(`Failed to save pair cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+            }
+          }
+          
           return { success: true, pools: matchedPools };
         }
       }
 
       logger.warn(`⚠️ No pools found for ${tokenA}/${tokenB} after scanning ${totalFetched} pools`);
+      
+      if (useCache) {
+        try {
+          const PoolCache = require('../models/PoolCache').default;
+          const expiresAt = new Date(Date.now() + 60000); // 1 minute for "not found"
+          await PoolCache.findOneAndUpdate(
+            { cacheKey },
+            {
+              cacheKey,
+              pools: [],
+              lastFetched: new Date(),
+              expiresAt,
+            },
+            { upsert: true, new: true }
+          );
+        } catch (dbError) { 
+        }
+      }
+      
       return { success: true, pools: [] };
     } catch (err: any) {
+      if (useCache) {
+        try {
+          const PoolCache = require('../models/PoolCache').default;
+          const cached = await PoolCache.findOne({ cacheKey });
+          if (cached && cached.pools.length > 0) {
+            logger.warn(`Pool fetch failed for pair ${tokenA}/${tokenB}, returning cached pools. Error: ${err?.message || String(err)}`);
+            return { success: true, pools: cached.pools };
+          }
+        } catch (cacheError) {
+        }
+      }
+      
       logger.error('❌ getPoolsForPair failed:', JSON.stringify(err.response?.data || err, null, 2));
       throw err;
     }
@@ -444,7 +514,6 @@ class SwapService {
           if (assetStr === "native") return "native";
           return assetStr.split(':')[0];
         });
-        // Case-insensitive comparison
         const fromCodeUpper = from.code === "native" ? "native" : from.code.toUpperCase();
         const toCodeUpper = to.code === "native" ? "native" : to.code.toUpperCase();
         const assetsUpper = assets.map((a: string) => a === "native" ? "native" : a.toUpperCase());
@@ -508,21 +577,23 @@ class SwapService {
       logger.info(`⏱ Duration: ${(Date.now() - start) / 1000}s`);
       logger.info('----------------------------------------------');
 
-      // Invalidate balance cache after successful swap (non-blocking)
       this.accountService.clearBalanceCache(publicKey).catch((err: any) => {
         logger.warn(`Failed to clear balance cache after swap: ${err?.message || String(err)}`);
+      });
+      
+      const PoolCache = require('../models/PoolCache').default;
+      PoolCache.deleteMany({}).catch((err: any) => {
+        logger.warn(`Failed to clear pool cache after swap: ${err?.message || String(err)}`);
       });
 
       return { hash: res.hash, expectedOutput: outputAmount.toFixed(7) };
     } catch (err: any) {
-      // Handle transaction failure (400 Bad Request)
       if (err?.response?.status === 400 && err?.response?.data) {
         const errorData = err.response.data;
         const resultCodes = errorData.extras?.result_codes;
         const operationsResultCodes = resultCodes?.operations || [];
         const transactionResultCode = resultCodes?.transaction || 'unknown';
 
-        // Build detailed error message
         let errorMessage = 'Transaction failed';
         
         if (transactionResultCode === 'tx_failed') {
