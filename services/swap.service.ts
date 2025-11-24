@@ -345,53 +345,131 @@ class SwapService {
       // After trustline creation, SDK should work - retry with small delay
       let finalAccount: any;
       let retries = 0;
-      const maxRetries = 3;
+      const maxRetries = 5; // Increased retries
+      
+      // Wait a bit longer after trustline creation to ensure Horizon has propagated
+      await new Promise(resolve => setTimeout(resolve, 1000));
       
       while (retries < maxRetries) {
         try {
-          // Small delay to ensure Horizon has updated after trustline creation
+          // Additional delay for retries
           if (retries > 0) {
-            await new Promise(resolve => setTimeout(resolve, 1000 * retries));
+            await new Promise(resolve => setTimeout(resolve, 1500 * retries));
             logger.info(`Retrying SDK account load after trustline (attempt ${retries + 1}/${maxRetries})...`);
           }
           
           // Use SDK - this is required for proper transaction building
           finalAccount = await server.loadAccount(publicKey);
-          logger.info(`✅ Reloaded account via SDK after trustline creation`);
+          logger.info(`✅ Reloaded account via SDK after trustline creation (sequence: ${finalAccount.sequenceNumber()})`);
           break;
         } catch (sdkError: any) {
           retries++;
+          const isNotFoundError =
+            sdkError?.response?.status === 404 ||
+            sdkError?.constructor?.name === 'NotFoundError' ||
+            (sdkError?.response?.data?.type === 'https://stellar.org/horizon-errors/not_found') ||
+            (sdkError?.response?.data?.status === 404);
+          
           if (retries >= maxRetries) {
-            // If SDK still fails after retries, this is a critical error
-            // We cannot build transactions without proper SDK account object
-            logger.error(`❌ CRITICAL: SDK failed to load account after trustline creation after ${maxRetries} retries. Cannot proceed with transaction.`);
+            // If SDK still fails after retries, try HTTP fallback as last resort
+            // But we need to ensure the account object is valid for TransactionBuilder
+            logger.warn(`SDK failed after ${maxRetries} retries, trying HTTP fallback as last resort...`);
+            try {
+              const horizonUrl = env.HORIZON_URL;
+              const accountUrl = `${horizonUrl}/accounts/${publicKey}`;
+              const response = await axios.get(accountUrl, { timeout: 15000 });
+              
+              if (response.status === 200 && response.data) {
+                const accountData = response.data;
+                // Create proper SDK Account object with correct sequence
+                finalAccount = new StellarSdk.Account(publicKey, accountData.sequence);
+                logger.info(`✅ Using HTTP fallback account (sequence: ${accountData.sequence})`);
+                break;
+              }
+            } catch (httpError: any) {
+              logger.error(`HTTP fallback also failed: ${httpError?.message || String(httpError)}`);
+            }
+            
+            // If all else fails, throw error
+            logger.error(`❌ CRITICAL: Failed to load account after trustline creation after all retries. Cannot proceed with transaction.`);
             logger.error(`SDK Error: ${sdkError?.message || String(sdkError)}`);
-            throw new Error(`Failed to load account via SDK after trustline creation. This is required for transaction building. Please try again.`);
+            throw new Error(`Failed to load account after trustline creation. Please try again in a few seconds.`);
           }
-          logger.warn(`SDK account load failed (attempt ${retries}/${maxRetries}), retrying...`);
+          logger.warn(`SDK account load failed (attempt ${retries}/${maxRetries}): ${sdkError?.message || String(sdkError)}`);
         }
       }
       
-      const tx = new StellarSdk.TransactionBuilder(finalAccount, {
-        fee: baseFee.toString(),
-        networkPassphrase: env.NETWORK,
-      })
-        .addOperation(
-          StellarSdk.Operation.pathPaymentStrictSend({
-            sendAsset: fromAsset,
-            sendAmount,
-            destination: publicKey,
-            destAsset: toAsset,
-            destMin: minDestAmount,
-            path: [],
-          })
-        )
-        .setTimeout(60)
-        .build();
+      // Validate finalAccount exists and has sequence
+      if (!finalAccount || !finalAccount.sequenceNumber) {
+        logger.error(`❌ Invalid account object after reload: missing sequence number`);
+        throw new Error(`Failed to load valid account object. Please try again.`);
+      }
+      
+      // Build the liquidity pool asset for the path
+      // For AMM swaps through liquidity pools, we need to include the liquidity pool asset in the path
+      const poolShareAsset = new StellarSdk.LiquidityPoolAsset(
+        fromAsset,
+        toAsset,
+        StellarSdk.LiquidityPoolFeeV18
+      );
+      
+      // Construct the path: through the liquidity pool
+      // Type assertion needed because LiquidityPoolAsset is compatible with Asset in paths for AMM swaps
+      const path = [poolShareAsset] as any as StellarSdk.Asset[];
+      
+      logger.info(`🔹 Building transaction with liquidity pool path`);
+      
+      let tx;
+      try {
+        tx = new StellarSdk.TransactionBuilder(finalAccount, {
+          fee: baseFee.toString(),
+          networkPassphrase: env.NETWORK,
+        })
+          .addOperation(
+            StellarSdk.Operation.pathPaymentStrictSend({
+              sendAsset: fromAsset,
+              sendAmount,
+              destination: publicKey,
+              destAsset: toAsset,
+              destMin: minDestAmount,
+              path: path,
+            })
+          )
+          .setTimeout(60)
+          .build();
+        
+        logger.info(`✅ Transaction built successfully with liquidity pool path`);
+      } catch (buildError: any) {
+        logger.error(`❌ Failed to build transaction:`, buildError);
+        logger.error(`Build error details:`, {
+          message: buildError?.message,
+          accountSequence: finalAccount.sequenceNumber(),
+          fromAsset: fromAsset.getCode(),
+          toAsset: toAsset.getCode(),
+          sendAmount,
+          minDestAmount,
+        });
+        throw new Error(`Failed to build transaction: ${buildError?.message || 'Unknown error'}`);
+      }
 
       tx.sign(user);
       logger.info(`🔹 Submitting swap transaction...`);
-      const res = await server.submitTransaction(tx);
+      logger.info(`🔹 Transaction details: from=${fromCode}, to=${toCode}, amount=${sendAmount}, minOut=${minDestAmount}`);
+      
+      let res;
+      try {
+        res = await server.submitTransaction(tx);
+      } catch (submitError: any) {
+        // Log detailed error information
+        logger.error(`❌ Transaction submission failed:`, submitError);
+        if (submitError?.response?.data) {
+          logger.error(`Response data:`, submitError.response.data);
+          if (submitError.response.data.extras) {
+            logger.error(`Extras:`, submitError.response.data.extras);
+          }
+        }
+        throw submitError;
+      }
 
       logger.success(`✅ Swap successful! TX: ${res.hash}`);
       logger.info(`⏱ Duration: ${(Date.now() - start) / 1000}s`);
