@@ -199,7 +199,14 @@ export class PoolService {
     }
 
     try {
-      let builder = server.liquidityPools().limit(limit);
+      // Validate limit is within acceptable range
+      const validLimit = Math.min(Math.max(1, limit), 200); // Between 1 and 200
+      if (validLimit !== limit) {
+        logger.warn(`⚠️ Limit ${limit} adjusted to ${validLimit} (must be between 1 and 200)`);
+      }
+      
+      let builder = server.liquidityPools().limit(validLimit);
+      
       if (cursor && cursor.length > 0) {
         // Validate cursor format - must not be a hex hash (pool ID)
         // Paging tokens are base64 encoded strings, not hex hashes
@@ -212,11 +219,14 @@ export class PoolService {
           // But we'll be lenient and just check it's not obviously wrong
           try {
             builder = builder.cursor(cursor);
+            logger.info(`🔹 Using cursor for pagination: ${cursor.substring(0, 20)}...`);
           } catch (cursorError: any) {
             logger.error(`❌ Invalid cursor format: ${cursor}. Error: ${cursorError?.message || String(cursorError)}`);
             throw new Error(`Invalid cursor format. Cursor must be a valid paging token, not a pool ID or transaction hash.`);
           }
         }
+      } else {
+        logger.info(`🔹 Fetching first page of liquidity pools (limit: ${validLimit})`);
       }
 
       const pools = await builder.call();
@@ -314,6 +324,22 @@ export class PoolService {
       }
       
       logger.error('❌ Error fetching liquidity pools:', err);
+      
+      // Log detailed error information for Bad Request errors
+      if (err?.response?.status === 400) {
+        logger.error('Bad Request details:', {
+          status: err.response.status,
+          data: err.response.data,
+          extras: err.response.data?.extras,
+          invalid_field: err.response.data?.extras?.invalid_field,
+          reason: err.response.data?.extras?.reason,
+          url: err.config?.url || 'unknown',
+          method: err.config?.method || 'unknown',
+          cursor: cursor,
+          limit: limit,
+        });
+      }
+      
       throw err;
     }
   }

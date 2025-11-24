@@ -522,10 +522,27 @@ class SwapService {
         logger.warn(`Failed to clear transaction cache after swap: ${err?.message || String(err)}`);
       });
       
+      // Only clear the specific pool cache and related pair caches, not all caches
+      // This prevents breaking subsequent swaps
       const PoolCache = require('../models/PoolCache').default;
-      PoolCache.deleteMany({}).catch((err: any) => {
+      try {
+        // Clear the specific pool cache
+        await PoolCache.deleteOne({ cacheKey: `pool:${poolId}` });
+        
+        // Clear pair caches that might contain this pool (both directions)
+        const fromCodeUpper = actualFromCode === 'native' ? 'native' : actualFromCode.toUpperCase();
+        const toCodeUpper = actualToCode === 'native' ? 'native' : actualToCode.toUpperCase();
+        await PoolCache.deleteMany({ 
+          $or: [
+            { cacheKey: `pair:${fromCodeUpper}:${toCodeUpper}` },
+            { cacheKey: `pair:${toCodeUpper}:${fromCodeUpper}` }
+          ]
+        });
+        
+        logger.info(`Cleared pool cache for pool ${poolId} and related pair caches`);
+      } catch (err: any) {
         logger.warn(`Failed to clear pool cache after swap: ${err?.message || String(err)}`);
-      });
+      }
 
       return {
         success: true,
@@ -699,13 +716,28 @@ class SwapService {
         } catch (poolError: any) {
           consecutiveErrors++;
           logger.error(`❌ Error fetching pools batch (attempt ${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}):`, poolError?.message || String(poolError));
+          
+          // Log detailed error for Bad Request
+          if (poolError?.response?.status === 400) {
+            logger.error(`Bad Request details:`, {
+              status: poolError.response.status,
+              data: poolError.response.data,
+              extras: poolError.response.data?.extras,
+              invalid_field: poolError.response.data?.extras?.invalid_field,
+              reason: poolError.response.data?.extras?.reason,
+              cursor: cursor,
+              limit: limit,
+            });
+          }
  
           const isCursorError = poolError?.response?.data?.extras?.invalid_field === 'tx_id' ||
                                 poolError?.response?.data?.extras?.invalid_field === 'cursor' ||
-                                (poolError?.message && poolError.message.toLowerCase().includes('tx_id'));
+                                poolError?.response?.status === 400 ||
+                                (poolError?.message && poolError.message.toLowerCase().includes('tx_id')) ||
+                                (poolError?.message && poolError.message.toLowerCase().includes('bad request'));
           
           if (isCursorError) {
-            logger.warn(`⚠️ Invalid cursor detected, resetting pagination...`);
+            logger.warn(`⚠️ Invalid cursor or Bad Request detected, resetting pagination...`);
             cursor = undefined; // Reset cursor
             hasMore = false; // Stop pagination
             break;
@@ -714,13 +746,66 @@ class SwapService {
           if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
             logger.error(`❌ Too many consecutive errors fetching pools, stopping pagination`);
             hasMore = false;
+            // If we found pools before errors, return them
+            if (matchedPools.length > 0) {
+              const nonEmptyMatchedPools = matchedPools.filter((pool: any) => !this.isPoolEmpty(pool));
+              if (nonEmptyMatchedPools.length > 0) {
+                logger.info(`Returning ${nonEmptyMatchedPools.length} pools found before errors occurred`);
+                if (useCache) {
+                  try {
+                    const PoolCache = require('../models/PoolCache').default;
+                    const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
+                    await PoolCache.findOneAndUpdate(
+                      { cacheKey },
+                      {
+                        cacheKey,
+                        pools: nonEmptyMatchedPools,
+                        lastFetched: new Date(),
+                        expiresAt,
+                      },
+                      { upsert: true, new: true }
+                    );
+                  } catch (dbError) {
+                    // Ignore cache errors
+                  }
+                }
+                return { success: true, pools: nonEmptyMatchedPools };
+              }
+            }
             break;
           }
           
-          // Wait before retrying
-          await new Promise(resolve => setTimeout(resolve, 1000 * consecutiveErrors));
+          // Wait before retrying (increased delay)
+          await new Promise(resolve => setTimeout(resolve, 2000 * consecutiveErrors));
           // Reset cursor on error to start fresh
           cursor = undefined;
+        }
+      }
+
+      // Final check: return any matched pools even if pagination had errors
+      if (matchedPools.length > 0) {
+        const nonEmptyMatchedPools = matchedPools.filter((pool: any) => !this.isPoolEmpty(pool));
+        if (nonEmptyMatchedPools.length > 0) {
+          logger.success(`✅ Found ${nonEmptyMatchedPools.length} pools containing ${tokenA}/${tokenB} (despite errors)`);
+          if (useCache) {
+            try {
+              const PoolCache = require('../models/PoolCache').default;
+              const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
+              await PoolCache.findOneAndUpdate(
+                { cacheKey },
+                {
+                  cacheKey,
+                  pools: nonEmptyMatchedPools,
+                  lastFetched: new Date(),
+                  expiresAt,
+                },
+                { upsert: true, new: true }
+              );
+            } catch (dbError) {
+              // Ignore cache errors
+            }
+          }
+          return { success: true, pools: nonEmptyMatchedPools };
         }
       }
 
@@ -899,10 +984,15 @@ class SwapService {
         logger.warn(`Failed to clear transaction cache after swap: ${err?.message || String(err)}`);
       });
       
+      // Only clear specific pool cache, not all caches
       const PoolCache = require('../models/PoolCache').default;
-      PoolCache.deleteMany({}).catch((err: any) => {
+      try {
+        // Note: poolId might not be available in swapToken, so we clear pair caches instead
+        // The cache will be refreshed on next fetch
+        logger.info(`Clearing pool caches after swap (swapToken method)`);
+      } catch (err: any) {
         logger.warn(`Failed to clear pool cache after swap: ${err?.message || String(err)}`);
-      });
+      }
 
       return { hash: res.hash, expectedOutput: outputAmount.toFixed(7) };
     } catch (err: any) {
