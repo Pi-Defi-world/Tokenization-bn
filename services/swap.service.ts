@@ -482,7 +482,7 @@ class SwapService {
       let res;
       try {
         logger.info(`🔹 Transaction XDR length: ${tx.toXDR().length} bytes`);
-        logger.info(`🔹 Transaction sequence: ${tx.sequenceNumber()}`);
+        logger.info(`🔹 Transaction sequence: ${finalAccount.sequenceNumber()}`);
         res = await server.submitTransaction(tx);
       } catch (submitError: any) {
         // Log detailed error information
