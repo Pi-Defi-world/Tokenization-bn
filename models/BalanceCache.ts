@@ -14,30 +14,28 @@ const balanceCacheSchema = new Schema<IBalanceCache>({
   publicKey: { 
     type: String, 
     required: true, 
-    unique: true,
-    index: true 
+    unique: true
   },
   balances: [{ type: Schema.Types.Mixed }],
   accountExists: { 
     type: Boolean, 
-    default: true,
-    index: true 
+    default: true
   },
   lastFetched: { 
     type: Date, 
-    default: Date.now,
-    index: true 
+    default: Date.now
+
   },
   expiresAt: { 
     type: Date, 
-    required: true,
-    index: { expireAfterSeconds: 0 } // TTL index - auto-delete expired entries
+    required: true
   }
 }, {
   timestamps: true
 });
 
-// Compound index for efficient queries
+balanceCacheSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
 balanceCacheSchema.index({ publicKey: 1, expiresAt: 1 });
 balanceCacheSchema.index({ accountExists: 1, lastFetched: 1 });
 

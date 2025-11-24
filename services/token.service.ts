@@ -49,9 +49,10 @@ class TokenService {
       }
     }
 
-    // Check if trustline already exists
+    // Check if trustline already exists (case-insensitive)
+    const assetCodeUpper = assetCode.toUpperCase();
     const trustlineExists = account!.balances.some(
-      (b: any) => b.asset_code === assetCode && b.asset_issuer === issuer
+      (b: any) => b.asset_code && b.asset_code.toUpperCase() === assetCodeUpper && b.asset_issuer === issuer
     );
 
     if (trustlineExists) {

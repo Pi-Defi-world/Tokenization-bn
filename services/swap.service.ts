@@ -21,10 +21,21 @@ class SwapService {
     const publicKey = user.publicKey();
     const account = await server.loadAccount(publicKey);
 
+    // Case-insensitive trustline check (Stellar stores exact case, but we match case-insensitively)
+    const assetCodeUpper = assetCode.toUpperCase();
     const exists = account.balances.some(
-      (b: any) => b.asset_code === assetCode && b.asset_issuer === issuer
+      (b: any) => b.asset_code && b.asset_code.toUpperCase() === assetCodeUpper && b.asset_issuer === issuer
     );
-    if (exists) return;
+    if (exists) {
+      // Find the actual asset code from the balance (correct case) for logging
+      const existingBalance = account.balances.find(
+        (b: any) => b.asset_code && b.asset_code.toUpperCase() === assetCodeUpper && b.asset_issuer === issuer
+      );
+      if (existingBalance) {
+        logger.info(`ℹ️ Trustline already exists for ${existingBalance.asset_code}:${issuer}`);
+      }
+      return; // Trustline exists, no need to create
+    }
 
     logger.info(`🔹 Creating trustline for ${assetCode}`);
     const asset = getAsset(assetCode, issuer);
@@ -61,7 +72,11 @@ class SwapService {
       const input = parseFloat(amount);
       const fee = pool.fee_bp / 10000;
 
-      const isAtoB = resA.asset.includes(from.code);
+      // Case-insensitive matching for asset codes
+      const resAAssetCode = resA.asset === "native" ? "native" : resA.asset.split(':')[0].toUpperCase();
+      const resBAssetCode = resB.asset === "native" ? "native" : resB.asset.split(':')[0].toUpperCase();
+      const fromCodeUpper = from.code === "native" ? "native" : from.code.toUpperCase();
+      const isAtoB = resAAssetCode === fromCodeUpper;
       const inputReserve = isAtoB ? x : y;
       const outputReserve = isAtoB ? y : x;
 
@@ -143,22 +158,44 @@ class SwapService {
       logger.info(`🔁 Swap via Pool: ${poolId}`);
       logger.info(`💸 ${sendAmount} ${String(from)} ➡ ${String(to)} (slippage ${slippagePercent}%)`);
 
-      const fromAsset =
-        fromCode === 'native' ? StellarSdk.Asset.native() : getAsset(fromCode, fromIssuer);
-      const toAsset =
-        toCode === 'native' ? StellarSdk.Asset.native() : getAsset(toCode, toIssuer);
-
-      if (toCode !== 'native') {
-        await this.ensureTrustline(userSecret, toCode, toIssuer);
-      }
-
+      // Get pool first to extract exact asset codes (with correct case)
       const pool = await poolService.getLiquidityPoolById(poolId);
       const [resA, resB] = pool.reserves;
-      const fee = pool.fee_bp / 10000;
+      
+      // Extract exact asset codes from pool reserves (preserves correct case from blockchain)
+      const resAAssetFull = resA.asset === "native" ? "native" : resA.asset;
+      const resBAssetFull = resB.asset === "native" ? "native" : resB.asset;
+      
+      // Case-insensitive matching to determine direction
+      const resAAssetCode = resA.asset === "native" ? "native" : resA.asset.split(':')[0].toUpperCase();
+      const resBAssetCode = resB.asset === "native" ? "native" : resB.asset.split(':')[0].toUpperCase();
+      const fromCodeUpper = fromCode === "native" ? "native" : fromCode.toUpperCase();
+      const isAtoB = resAAssetCode === fromCodeUpper;
+      
+      // Use exact asset codes from pool reserves (correct case) for Stellar SDK
+      const actualFromAsset = isAtoB ? resAAssetFull : resBAssetFull;
+      const actualToAsset = isAtoB ? resBAssetFull : resAAssetFull;
+      
+      // Parse actual asset codes and issuers
+      const [actualFromCode, actualFromIssuer] = actualFromAsset === "native" 
+        ? ["native", undefined] 
+        : actualFromAsset.split(':');
+      const [actualToCode, actualToIssuer] = actualToAsset === "native" 
+        ? ["native", undefined] 
+        : actualToAsset.split(':');
+      
+      const fromAsset =
+        actualFromCode === 'native' ? StellarSdk.Asset.native() : getAsset(actualFromCode, actualFromIssuer);
+      const toAsset =
+        actualToCode === 'native' ? StellarSdk.Asset.native() : getAsset(actualToCode, actualToIssuer);
 
+      if (actualToCode !== 'native') {
+        await this.ensureTrustline(userSecret, actualToCode, actualToIssuer);
+      }
+
+      const fee = pool.fee_bp / 10000;
       const x = parseFloat(resA.amount);
       const y = parseFloat(resB.amount);
-      const isAtoB = resA.asset.includes(fromCode);
       const inputReserve = isAtoB ? x : y;
       const outputReserve = isAtoB ? y : x;
 
@@ -192,20 +229,22 @@ class SwapService {
         }
       } else {
         // For non-native assets, check trustline balance
+        // Case-insensitive balance check (Stellar stores exact case, but we match case-insensitively)
+        const actualFromCodeUpper = actualFromCode.toUpperCase();
         const assetBalance = account.balances.find(
-          (b: any) => b.asset_code === fromCode && b.asset_issuer === fromIssuer
+          (b: any) => b.asset_code && b.asset_code.toUpperCase() === actualFromCodeUpper && b.asset_issuer === actualFromIssuer
         );
         if (assetBalance) {
           const availableBalance = parseFloat(assetBalance.balance);
-          logger.info(`💰 Balance check: Available: ${availableBalance.toFixed(7)} ${fromCode}, Required: ${input.toFixed(7)}`);
+          logger.info(`💰 Balance check: Available: ${availableBalance.toFixed(7)} ${actualFromCode}, Required: ${input.toFixed(7)}`);
 
           if (availableBalance < input) {
-            const errorMsg = `Insufficient balance. Available: ${availableBalance.toFixed(7)} ${fromCode}, Required: ${input.toFixed(7)}`;
+            const errorMsg = `Insufficient balance. Available: ${availableBalance.toFixed(7)} ${actualFromCode}, Required: ${input.toFixed(7)}`;
             logger.error(`❌ ${errorMsg}`);
             throw new Error(errorMsg);
           }
         } else {
-          throw new Error(`No ${fromCode} balance found. You may need to establish a trustline first.`);
+          throw new Error(`No ${actualFromCode} balance found. You may need to establish a trustline first.`);
         }
       }
 
@@ -234,7 +273,7 @@ class SwapService {
       logger.info(`⏱ Duration: ${(Date.now() - start) / 1000}s`);
       logger.info(`----------------------------------------------`);
 
-      // Invalidate balance cache after successful swap (non-blocking)
+ 
       this.accountService.clearBalanceCache(publicKey).catch((err: any) => {
         logger.warn(`Failed to clear balance cache after swap: ${err?.message || String(err)}`);
       });
@@ -422,7 +461,11 @@ class SwapService {
       const input = parseFloat(sendAmount);
       const fee = pool.fee_bp / 10000;
 
-      const isAtoB = resA.asset.includes(from.code);
+      // Case-insensitive matching for asset codes
+      const resAAssetCode = resA.asset === "native" ? "native" : resA.asset.split(':')[0].toUpperCase();
+      const resBAssetCode = resB.asset === "native" ? "native" : resB.asset.split(':')[0].toUpperCase();
+      const fromCodeUpper = from.code === "native" ? "native" : from.code.toUpperCase();
+      const isAtoB = resAAssetCode === fromCodeUpper;
       const inputReserve = isAtoB ? x : y;
       const outputReserve = isAtoB ? y : x;
 
