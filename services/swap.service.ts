@@ -405,19 +405,12 @@ class SwapService {
         throw new Error(`Failed to load valid account object. Please try again.`);
       }
       
-      // Build the liquidity pool asset for the path
-      // For AMM swaps through liquidity pools, we need to include the liquidity pool asset in the path
-      const poolShareAsset = new StellarSdk.LiquidityPoolAsset(
-        fromAsset,
-        toAsset,
-        StellarSdk.LiquidityPoolFeeV18
-      );
+      // For AMM swaps through liquidity pools, use empty path
+      // The network will automatically route through available liquidity pools
+      // The pathPaymentStrictSend operation will find the best path including liquidity pools
+      const path: StellarSdk.Asset[] = [];
       
-      // Construct the path: through the liquidity pool
-      // Type assertion needed because LiquidityPoolAsset is compatible with Asset in paths for AMM swaps
-      const path = [poolShareAsset] as any as StellarSdk.Asset[];
-      
-      logger.info(`🔹 Building transaction with liquidity pool path`);
+      logger.info(`🔹 Building transaction for AMM swap (network will find liquidity pool path)`);
       
       let tx;
       try {
@@ -438,7 +431,7 @@ class SwapService {
           .setTimeout(60)
           .build();
         
-        logger.info(`✅ Transaction built successfully with liquidity pool path`);
+        logger.info(`✅ Transaction built successfully`);
       } catch (buildError: any) {
         logger.error(`❌ Failed to build transaction:`, buildError);
         logger.error(`Build error details:`, {
