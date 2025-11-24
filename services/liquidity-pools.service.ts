@@ -58,7 +58,7 @@ export class PoolService {
       logger.success(`✅ Trustline established for ${assetCode}`);
       logger.info(`🔹 TX hash: ${res.hash}`);
     } catch (err: any) {
-      logger.error(`❌ Error ensuring trustline:`, JSON.stringify(err.response?.data || err, null, 2));
+      logger.error(`❌ Error ensuring trustline:`, err);
       throw err;
     }
   }
@@ -201,11 +201,21 @@ export class PoolService {
     try {
       let builder = server.liquidityPools().limit(limit);
       if (cursor && cursor.length > 0) {
+        // Validate cursor format - must not be a hex hash (pool ID)
+        // Paging tokens are base64 encoded strings, not hex hashes
         const isHexHash = /^[0-9a-f]{64}$/i.test(cursor);
-        if (!isHexHash) {
-          builder = builder.cursor(cursor);
-        } else {
+        if (isHexHash) {
           logger.warn(`⚠️ Cursor looks like a hex hash (pool ID?), skipping cursor. Use paging_token instead.`);
+          // Don't set cursor if it looks like a pool ID
+        } else {
+          // Additional validation: cursor should be base64-like (contains A-Z, a-z, 0-9, +, /, =)
+          // But we'll be lenient and just check it's not obviously wrong
+          try {
+            builder = builder.cursor(cursor);
+          } catch (cursorError: any) {
+            logger.error(`❌ Invalid cursor format: ${cursor}. Error: ${cursorError?.message || String(cursorError)}`);
+            throw new Error(`Invalid cursor format. Cursor must be a valid paging token, not a pool ID or transaction hash.`);
+          }
         }
       }
 
@@ -227,9 +237,18 @@ export class PoolService {
       let nextCursor: string | undefined = undefined;
       try {
         if (pools.records.length === limit && pools.paging_token) {
-          nextCursor = pools.paging_token;
+          // Validate paging_token is not a pool ID (hex hash)
+          const pagingToken = String(pools.paging_token);
+          const isHexHash = /^[0-9a-f]{64}$/i.test(pagingToken);
+          if (!isHexHash) {
+            nextCursor = pagingToken;
+          } else {
+            logger.warn(`⚠️ paging_token looks like a pool ID (hex hash), not using it as cursor`);
+            nextCursor = undefined;
+          }
         }
       } catch (e) {
+        logger.warn(`Error extracting paging_token: ${e instanceof Error ? e.message : String(e)}`);
       }
 
       if (useCache && !cursor) {
@@ -294,7 +313,7 @@ export class PoolService {
         }
       }
       
-      logger.error('❌ Error fetching liquidity pools:', JSON.stringify(err.response?.data || err, null, 2));
+      logger.error('❌ Error fetching liquidity pools:', err);
       throw err;
     }
   }
@@ -454,7 +473,7 @@ export class PoolService {
           if (attempt < MAX_RETRIES) {
             continue;
           }
-          logger.error(`❌ Error fetching liquidity pool by ID (${liquidityPoolId}):`, JSON.stringify(err.response?.data || err, null, 2));
+          logger.error(`❌ Error fetching liquidity pool by ID (${liquidityPoolId}):`, err);
           throw err;
         }
       }
@@ -516,7 +535,7 @@ export class PoolService {
       
       return { hash: result.hash };
     } catch (err: any) {
-      logger.error('❌ Error adding liquidity:', JSON.stringify(err.response?.data || err, null, 2));
+      logger.error('❌ Error adding liquidity:', err);
       throw err;
     }
   }
@@ -561,7 +580,7 @@ export class PoolService {
       
       return { hash: result.hash };
     } catch (err: any) {
-      logger.error('❌ Error removing liquidity:', JSON.stringify(err.response?.data || err, null, 2));
+      logger.error('❌ Error removing liquidity:', err);
       throw err;
     }
   }
@@ -590,7 +609,7 @@ export class PoolService {
       logger.info(`💰 Rewards calculated for ${userPublicKey}`);
       return { poolId, userShares, totalShares, userPercentage, rewards };
     } catch (err: any) {
-      logger.error('❌ Error fetching pool rewards:', JSON.stringify(err.response?.data || err, null, 2));
+      logger.error('❌ Error fetching pool rewards:', err);
       throw err;
     }
   }
@@ -630,7 +649,7 @@ export class PoolService {
       logger.success(`✅ Found ${userPools.length} user liquidity pools`);
       return userPools;
     } catch (err: any) {
-      logger.error(`❌ Error fetching user liquidity pools:`, JSON.stringify(err.response?.data || err, null, 2));
+      logger.error(`❌ Error fetching user liquidity pools:`, err);
       throw err;
     }
   }

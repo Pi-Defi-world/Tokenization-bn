@@ -39,10 +39,12 @@ class SwapService {
           
           if (response.status === 200 && response.data) {
             logger.info(`✅ Successfully loaded account via HTTP fallback for ${publicKey}`);
-            // Create a proper Stellar SDK Account object from the HTTP response
-            // This ensures compatibility with TransactionBuilder
             const accountData = response.data;
-            return new StellarSdk.Account(publicKey, accountData.sequence);
+            const account = new StellarSdk.Account(publicKey, accountData.sequence);
+            // Manually attach balances from HTTP response since SDK Account doesn't include them
+            // This is needed for balance validation before transactions
+            (account as any).balances = accountData.balances || [];
+            return account;
           }
         } catch (httpError: any) {
           logger.error(`HTTP fallback also failed for account ${publicKey}: ${httpError?.message || String(httpError)}`);
@@ -87,6 +89,12 @@ class SwapService {
     const user = StellarSdk.Keypair.fromSecret(userSecret);
     const publicKey = user.publicKey();
     const account = await this.loadAccountWithFallback(publicKey);
+
+    // Ensure balances array exists (from HTTP fallback if needed)
+    if (!account.balances || !Array.isArray(account.balances)) {
+      logger.error(`Account object missing balances array for ${publicKey}`);
+      throw new Error(`Failed to load account balances. Cannot check trustline.`);
+    }
 
     // Case-insensitive trustline check (Pi Network stores exact case, but we match case-insensitively)
     const assetCodeUpper = assetCode.toUpperCase();
@@ -269,8 +277,6 @@ class SwapService {
 
       if (actualToCode !== 'native') {
         await this.ensureTrustline(userSecret, actualToCode, actualToIssuer);
-        // After creating trustline, account sequence number changes
-        // Small delay to ensure Horizon has updated the account
         await new Promise(resolve => setTimeout(resolve, 500));
       }
 
@@ -288,6 +294,12 @@ class SwapService {
 
       // Load account for balance check (before trustline creation)
       const account = await this.loadAccountWithFallback(publicKey);
+
+      if (!account.balances || !Array.isArray(account.balances)) {
+        logger.error(`Account object missing balances array for ${publicKey}`);
+        throw new Error(`Failed to load account balances. Cannot validate balance for swap.`);
+      }
+      
       const baseFee = await server.fetchBaseFee();
 
       // Validate balance before attempting swap
@@ -329,16 +341,35 @@ class SwapService {
         }
       }
       // Reload account after trustline creation to get updated sequence number
-      // Try SDK first (account should exist now), fallback to HTTP if needed
+      // CRITICAL: For transactions, we MUST use SDK - HTTP fallback is only for reading data
+      // After trustline creation, SDK should work - retry with small delay
       let finalAccount: any;
-      try {
-        // After trustline creation, SDK should work - try it first
-        finalAccount = await server.loadAccount(publicKey);
-        logger.info(`✅ Reloaded account via SDK after trustline creation`);
-      } catch (sdkError: any) {
-        // If SDK still fails, use HTTP fallback
-        logger.warn(`SDK still failed after trustline, using HTTP fallback...`);
-        finalAccount = await this.loadAccountWithFallback(publicKey);
+      let retries = 0;
+      const maxRetries = 3;
+      
+      while (retries < maxRetries) {
+        try {
+          // Small delay to ensure Horizon has updated after trustline creation
+          if (retries > 0) {
+            await new Promise(resolve => setTimeout(resolve, 1000 * retries));
+            logger.info(`Retrying SDK account load after trustline (attempt ${retries + 1}/${maxRetries})...`);
+          }
+          
+          // Use SDK - this is required for proper transaction building
+          finalAccount = await server.loadAccount(publicKey);
+          logger.info(`✅ Reloaded account via SDK after trustline creation`);
+          break;
+        } catch (sdkError: any) {
+          retries++;
+          if (retries >= maxRetries) {
+            // If SDK still fails after retries, this is a critical error
+            // We cannot build transactions without proper SDK account object
+            logger.error(`❌ CRITICAL: SDK failed to load account after trustline creation after ${maxRetries} retries. Cannot proceed with transaction.`);
+            logger.error(`SDK Error: ${sdkError?.message || String(sdkError)}`);
+            throw new Error(`Failed to load account via SDK after trustline creation. This is required for transaction building. Please try again.`);
+          }
+          logger.warn(`SDK account load failed (attempt ${retries}/${maxRetries}), retrying...`);
+        }
       }
       
       const tx = new StellarSdk.TransactionBuilder(finalAccount, {
@@ -428,7 +459,7 @@ class SwapService {
         throw enhancedError;
       }
 
-      logger.error(`❌ swapWithPool failed:`, JSON.stringify(err.response?.data || err, null, 2));
+      logger.error(`❌ swapWithPool failed:`, err);
       throw err;
     }
   }
@@ -466,64 +497,109 @@ class SwapService {
       const matchedPools: any[] = [];
       let totalFetched = 0;
       let hasMore = true;
+      let consecutiveErrors = 0;
+      const MAX_CONSECUTIVE_ERRORS = 2;
 
       while (hasMore) {
-        const result = await poolService.getLiquidityPools(limit, cursor, useCache);
-        totalFetched += result.records.length;
+        try {
+          const result = await poolService.getLiquidityPools(limit, cursor, useCache);
+          consecutiveErrors = 0; // Reset error counter on success
+          totalFetched += result.records.length;
 
-        for (const pool of result.records) {
-          // Skip empty pools
-          if (this.isPoolEmpty(pool)) {
-            continue;
-          }
-          
-          const assets = pool.reserves.map((r: any) => {
-            const assetStr = r.asset || "";
-            if (assetStr === "native") return "native";
-            return assetStr.split(':')[0];
-          });
-          const tokenAUpper = tokenA === "native" ? "native" : tokenA.toUpperCase();
-          const tokenBUpper = tokenB === "native" ? "native" : tokenB.toUpperCase();
-          const assetsUpper = assets.map((a: string) => a === "native" ? "native" : a.toUpperCase());
-          if (assetsUpper.includes(tokenAUpper) && assetsUpper.includes(tokenBUpper)) {
-            matchedPools.push(pool);
-          }
-        }
-
-        logger.info(`📦 Fetched ${totalFetched} pools so far... (${matchedPools.length} matches)`);
-
-        cursor = result.nextCursor;
-        hasMore = !!cursor && result.records.length > 0;
-
-        // Filter out empty pools from matched pools
-        const nonEmptyMatchedPools = matchedPools.filter((pool: any) => !this.isPoolEmpty(pool));
-        
-        if (nonEmptyMatchedPools.length > 0) {
-          if (nonEmptyMatchedPools.length < matchedPools.length) {
-            logger.info(`Filtered out ${matchedPools.length - nonEmptyMatchedPools.length} empty pools from matches`);
-          }
-          logger.success(`✅ Found ${nonEmptyMatchedPools.length} pools containing ${tokenA}/${tokenB}`);
-          
-          if (useCache) {
-            try {
-              const PoolCache = require('../models/PoolCache').default;
-              const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
-              await PoolCache.findOneAndUpdate(
-                { cacheKey },
-                {
-                  cacheKey,
-                  pools: nonEmptyMatchedPools,
-                  lastFetched: new Date(),
-                  expiresAt,
-                },
-                { upsert: true, new: true }
-              );
-            } catch (dbError) {
-              logger.warn(`Failed to save pair cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+          for (const pool of result.records) {
+            // Skip empty pools
+            if (this.isPoolEmpty(pool)) {
+              continue;
+            }
+            
+            const assets = pool.reserves.map((r: any) => {
+              const assetStr = r.asset || "";
+              if (assetStr === "native") return "native";
+              return assetStr.split(':')[0];
+            });
+            const tokenAUpper = tokenA === "native" ? "native" : tokenA.toUpperCase();
+            const tokenBUpper = tokenB === "native" ? "native" : tokenB.toUpperCase();
+            const assetsUpper = assets.map((a: string) => a === "native" ? "native" : a.toUpperCase());
+            if (assetsUpper.includes(tokenAUpper) && assetsUpper.includes(tokenBUpper)) {
+              matchedPools.push(pool);
             }
           }
+
+          logger.info(`📦 Fetched ${totalFetched} pools so far... (${matchedPools.length} matches)`);
+
+          // Validate nextCursor before using it - must be a valid paging token, not a pool ID
+          const nextCursor = result.nextCursor;
+          if (nextCursor) {
+            // Validate it's not a hex hash (pool ID) - paging tokens are base64 encoded
+            const isHexHash = /^[0-9a-f]{64}$/i.test(nextCursor);
+            if (isHexHash) {
+              logger.warn(`⚠️ nextCursor looks like a pool ID (hex hash), not a paging token. Stopping pagination.`);
+              cursor = undefined;
+              hasMore = false;
+            } else {
+              cursor = nextCursor;
+              hasMore = result.records.length > 0;
+            }
+          } else {
+            cursor = undefined;
+            hasMore = false;
+          }
+
+          // Filter out empty pools from matched pools
+          const nonEmptyMatchedPools = matchedPools.filter((pool: any) => !this.isPoolEmpty(pool));
           
-          return { success: true, pools: nonEmptyMatchedPools };
+          if (nonEmptyMatchedPools.length > 0) {
+            if (nonEmptyMatchedPools.length < matchedPools.length) {
+              logger.info(`Filtered out ${matchedPools.length - nonEmptyMatchedPools.length} empty pools from matches`);
+            }
+            logger.success(`✅ Found ${nonEmptyMatchedPools.length} pools containing ${tokenA}/${tokenB}`);
+            
+            if (useCache) {
+              try {
+                const PoolCache = require('../models/PoolCache').default;
+                const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
+                await PoolCache.findOneAndUpdate(
+                  { cacheKey },
+                  {
+                    cacheKey,
+                    pools: nonEmptyMatchedPools,
+                    lastFetched: new Date(),
+                    expiresAt,
+                  },
+                  { upsert: true, new: true }
+                );
+              } catch (dbError) {
+                logger.warn(`Failed to save pair cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+              }
+            }
+            
+            return { success: true, pools: nonEmptyMatchedPools };
+          }
+        } catch (poolError: any) {
+          consecutiveErrors++;
+          logger.error(`❌ Error fetching pools batch (attempt ${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}):`, poolError?.message || String(poolError));
+ 
+          const isCursorError = poolError?.response?.data?.extras?.invalid_field === 'tx_id' ||
+                                poolError?.response?.data?.extras?.invalid_field === 'cursor' ||
+                                (poolError?.message && poolError.message.toLowerCase().includes('tx_id'));
+          
+          if (isCursorError) {
+            logger.warn(`⚠️ Invalid cursor detected, resetting pagination...`);
+            cursor = undefined; // Reset cursor
+            hasMore = false; // Stop pagination
+            break;
+          }
+          
+          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            logger.error(`❌ Too many consecutive errors fetching pools, stopping pagination`);
+            hasMore = false;
+            break;
+          }
+          
+          // Wait before retrying
+          await new Promise(resolve => setTimeout(resolve, 1000 * consecutiveErrors));
+          // Reset cursor on error to start fresh
+          cursor = undefined;
         }
       }
 
@@ -565,7 +641,7 @@ class SwapService {
         }
       }
       
-      logger.error('❌ getPoolsForPair failed:', JSON.stringify(err.response?.data || err, null, 2));
+      logger.error('❌ getPoolsForPair failed:', err);
       throw err;
     }
   }
@@ -750,7 +826,7 @@ class SwapService {
         throw enhancedError;
       }
 
-      logger.error(`❌ Swap failed: ${JSON.stringify(err.response?.data || err, null, 2)}`);
+      logger.error(`❌ Swap failed:`, err);
       logger.info('----------------------------------------------');
       throw err;
     }

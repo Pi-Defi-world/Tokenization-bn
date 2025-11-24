@@ -90,7 +90,7 @@ class TokenService {
         `❌ Failed to establish trustline for asset ${assetCode} (issuer: ${issuer}) for user: ${userPublicKey}`
       );
       if (err.response?.data) {
-        logger.error(`Error: ${JSON.stringify(err.response.data)}`);
+        logger.error(`Error:`, err);
       } else {
         logger.error(`Error: ${err.message}`);
       }
@@ -155,7 +155,7 @@ class TokenService {
         `❌ Failed to set home domain "${homeDomain}" for issuer: ${issuerPublicKey}`
       );
       if (err.response?.data) {
-        logger.error(`Error: ${JSON.stringify(err.response.data)}`);
+        logger.error(`Error:`, err);
       } else {
         logger.error(`Error: ${err.message}`);
       }
@@ -265,9 +265,9 @@ class TokenService {
         if (submitError.response?.data) {
           const errorData = submitError.response.data;
           if (errorData.extras?.result_codes) {
-            logger.error(`Result codes: ${JSON.stringify(errorData.extras.result_codes)}`);
+            logger.error(`Result codes:`, errorData.extras.result_codes);
           }
-          logger.error(`Error: ${JSON.stringify(errorData)}`);
+          logger.error(`Error:`, submitError);
         } else {
           logger.error(`Error: ${submitError.message}`);
         }
@@ -297,11 +297,11 @@ class TokenService {
       if (err.response?.data) {
         const errorData = err.response.data;
         if (errorData.extras?.result_codes) {
-          logger.error(`Result codes: ${JSON.stringify(errorData.extras.result_codes)}`);
+          logger.error(`Result codes:`, errorData.extras.result_codes);
         }
-        logger.error(`Error: ${JSON.stringify(errorData)}`);
+        logger.error(`Error:`, err);
       } else {
-        logger.error(`Error: ${err.message || JSON.stringify(err)}`);
+        logger.error(`Error:`, err);
       }
       throw err;
     }

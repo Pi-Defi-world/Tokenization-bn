@@ -19,11 +19,11 @@ class UsersService {
 
   async signInUser(authResult: IAuthResult): Promise<IAuthResponse> {
     try {
-     const dd=  await platformAPIClient.get("/v2/me", {
+      await platformAPIClient.get("/v2/me", {
         headers: { Authorization: `Bearer ${authResult.accessToken}` },
       });
 
-      console.log(dd)
+      logger.info(`✅ Pi API authentication successful for user: ${authResult.user.username}`);
 
     } catch (error) {
       throw new Error("Invalid access token");
