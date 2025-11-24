@@ -39,20 +39,10 @@ class SwapService {
           
           if (response.status === 200 && response.data) {
             logger.info(`✅ Successfully loaded account via HTTP fallback for ${publicKey}`);
-            // Convert HTTP response to SDK-like account object
-            // The SDK Account object has specific methods, but for TransactionBuilder we mainly need:
-            // - sequenceNumber (as string)
-            // - accountId (publicKey)
-            // Create a minimal account-like object
+            // Create a proper Stellar SDK Account object from the HTTP response
+            // This ensures compatibility with TransactionBuilder
             const accountData = response.data;
-            return {
-              accountId: () => publicKey,
-              sequenceNumber: () => accountData.sequence,
-              sequenceNumber_: accountData.sequence,
-              balances: accountData.balances || [],
-              // Add other properties that might be needed
-              ...accountData
-            };
+            return new StellarSdk.Account(publicKey, accountData.sequence);
           }
         } catch (httpError: any) {
           logger.error(`HTTP fallback also failed for account ${publicKey}: ${httpError?.message || String(httpError)}`);
@@ -279,6 +269,9 @@ class SwapService {
 
       if (actualToCode !== 'native') {
         await this.ensureTrustline(userSecret, actualToCode, actualToIssuer);
+        // After creating trustline, account sequence number changes
+        // Small delay to ensure Horizon has updated the account
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
 
       const fee = pool.fee_bp / 10000;
@@ -293,6 +286,7 @@ class SwapService {
         (inputAfterFee * outputReserve) / (inputReserve + inputAfterFee);
       const minDestAmount = (outputAmount * (1 - slippagePercent / 100)).toFixed(7);
 
+      // Load account for balance check (before trustline creation)
       const account = await this.loadAccountWithFallback(publicKey);
       const baseFee = await server.fetchBaseFee();
 
@@ -334,12 +328,18 @@ class SwapService {
           throw new Error(`No ${actualFromCode} balance found. You may need to establish a trustline first.`);
         }
       }
-      const finalAccount = await this.loadAccountWithFallback(publicKey);
-      
-      // Ensure we have the sequence number in the right format for TransactionBuilder
-      const sequenceNumber = typeof finalAccount.sequenceNumber === 'function' 
-        ? finalAccount.sequenceNumber() 
-        : (finalAccount.sequenceNumber_ || finalAccount.sequence);
+      // Reload account after trustline creation to get updated sequence number
+      // Try SDK first (account should exist now), fallback to HTTP if needed
+      let finalAccount: any;
+      try {
+        // After trustline creation, SDK should work - try it first
+        finalAccount = await server.loadAccount(publicKey);
+        logger.info(`✅ Reloaded account via SDK after trustline creation`);
+      } catch (sdkError: any) {
+        // If SDK still fails, use HTTP fallback
+        logger.warn(`SDK still failed after trustline, using HTTP fallback...`);
+        finalAccount = await this.loadAccountWithFallback(publicKey);
+      }
       
       const tx = new StellarSdk.TransactionBuilder(finalAccount, {
         fee: baseFee.toString(),
