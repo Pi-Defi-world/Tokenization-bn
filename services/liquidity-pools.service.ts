@@ -278,19 +278,181 @@ export class PoolService {
     }
   }
 
-  public async getLiquidityPoolById(liquidityPoolId: string) {
-    try {
-      if (!liquidityPoolId) {
-        throw new Error('liquidityPoolId is required');
-      }
-      logger.info(`🔹 Fetching liquidity pool details for ID: ${liquidityPoolId}`);
-      const pool = await server.liquidityPools().liquidityPoolId(liquidityPoolId).call();
-      logger.info(`🔹 Pool found: ${pool.id} | Assets: ${pool.reserves.map((r: any) => r.asset).join(' & ')}`);
-      return pool;
-    } catch (err: any) {
-      logger.error(`❌ Error fetching liquidity pool by ID (${liquidityPoolId}):`, JSON.stringify(err.response?.data || err, null, 2));
-      throw err;
+  public async getLiquidityPoolById(liquidityPoolId: string, useCache: boolean = true) {
+    if (!liquidityPoolId) {
+      throw new Error('liquidityPoolId is required');
     }
+    
+    const cacheKey = `pool:${liquidityPoolId}`;
+    const CACHE_TTL_MS = 300000; // 5 minutes
+    
+    // Check cache first
+    if (useCache) {
+      try {
+        const cached = await PoolCache.findOne({ 
+          cacheKey,
+          expiresAt: { $gt: new Date() }
+        });
+
+        if (cached && cached.pools && cached.pools.length > 0) {
+          const cachedPool = cached.pools[0];
+          logger.info(`Using cached pool ${liquidityPoolId} (from DB, expires: ${cached.expiresAt.toISOString()})`);
+          return cachedPool;
+        }
+      } catch (dbError) {
+        logger.warn(`Error reading from pool cache DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+      }
+    }
+    
+    // Try to find pool in cached pool lists (from getPoolsForPair or getLiquidityPools)
+    // This helps when pool was in list but individual fetch fails
+    if (useCache) {
+      try {
+        // Check pair caches (from getPoolsForPair)
+        const pairCaches = await PoolCache.find({ 
+          cacheKey: { $regex: /^pair:/ },
+          expiresAt: { $gt: new Date() }
+        });
+        
+        for (const cached of pairCaches) {
+          if (cached.pools && Array.isArray(cached.pools)) {
+            const foundPool = cached.pools.find((p: any) => p.id === liquidityPoolId);
+            if (foundPool) {
+              logger.info(`✅ Found pool ${liquidityPoolId} in cached pool list (pair cache)`);
+              // Cache it individually for faster future access
+              try {
+                const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
+                await PoolCache.findOneAndUpdate(
+                  { cacheKey },
+                  {
+                    cacheKey,
+                    pools: [foundPool],
+                    lastFetched: new Date(),
+                    expiresAt,
+                  },
+                  { upsert: true, new: true }
+                );
+              } catch (e) {
+                // Ignore cache save errors
+              }
+              return foundPool;
+            }
+          }
+        }
+        
+        // Check "all-pools" cache (from getLiquidityPools)
+        const allPoolsCache = await PoolCache.findOne({ 
+          cacheKey: 'all-pools',
+          expiresAt: { $gt: new Date() }
+        });
+        
+        if (allPoolsCache && allPoolsCache.pools && Array.isArray(allPoolsCache.pools)) {
+          const foundPool = allPoolsCache.pools.find((p: any) => p.id === liquidityPoolId);
+          if (foundPool) {
+            logger.info(`✅ Found pool ${liquidityPoolId} in cached all-pools list`);
+            // Cache it individually for faster future access
+            try {
+              const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
+              await PoolCache.findOneAndUpdate(
+                { cacheKey },
+                {
+                  cacheKey,
+                  pools: [foundPool],
+                  lastFetched: new Date(),
+                  expiresAt,
+                },
+                { upsert: true, new: true }
+              );
+            } catch (e) {
+              // Ignore cache save errors
+            }
+            return foundPool;
+          }
+        }
+      } catch (dbError) {
+        // Ignore errors when searching cached pools
+        logger.warn(`Error searching cached pools: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+      }
+    }
+    
+    // Fetch from Horizon with retry logic
+    let lastError: any = null;
+    const MAX_RETRIES = 2;
+    
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        if (attempt > 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+          logger.info(`Retrying fetch for pool ${liquidityPoolId} (attempt ${attempt}/${MAX_RETRIES})`);
+        } else {
+          logger.info(`🔹 Fetching liquidity pool details for ID: ${liquidityPoolId}`);
+        }
+        
+        const pool = await server.liquidityPools().liquidityPoolId(liquidityPoolId).call();
+        logger.info(`🔹 Pool found: ${pool.id} | Assets: ${pool.reserves.map((r: any) => r.asset).join(' & ')}`);
+        
+        // Cache the pool
+        if (useCache) {
+          try {
+            const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
+            await PoolCache.findOneAndUpdate(
+              { cacheKey },
+              {
+                cacheKey,
+                pools: [pool],
+                lastFetched: new Date(),
+                expiresAt,
+              },
+              { upsert: true, new: true }
+            );
+          } catch (dbError) {
+            logger.warn(`Failed to save pool cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+          }
+        }
+        
+        return pool;
+      } catch (err: any) {
+        lastError = err;
+        
+        // Check if it's a "not found" error
+        const isNotFoundError =
+          err?.response?.status === 404 ||
+          err?.constructor?.name === 'NotFoundError' ||
+          (err?.response?.data?.type === 'https://stellar.org/horizon-errors/not_found') ||
+          (err?.response?.data?.status === 404);
+        
+        if (isNotFoundError && attempt < MAX_RETRIES) {
+          // Retry once more in case it's a temporary Horizon issue
+          continue;
+        } else if (isNotFoundError) {
+          // Pool truly not found - clear any stale cache entries
+          if (useCache) {
+            try {
+              await PoolCache.deleteMany({ cacheKey });
+              // Also remove from pair caches
+              await PoolCache.updateMany(
+                { cacheKey: { $regex: /^pair:/ } },
+                { $pull: { pools: { id: liquidityPoolId } } }
+              );
+            } catch (e) {
+              // Ignore cache cleanup errors
+            }
+          }
+          logger.error(`❌ Pool ${liquidityPoolId} not found on Pi Network Horizon after ${MAX_RETRIES} attempts`);
+          throw new Error(`Liquidity pool ${liquidityPoolId} not found. The pool may have been removed or dissolved.`);
+        } else {
+          // Other errors - retry if we have attempts left
+          if (attempt < MAX_RETRIES) {
+            continue;
+          }
+          logger.error(`❌ Error fetching liquidity pool by ID (${liquidityPoolId}):`, JSON.stringify(err.response?.data || err, null, 2));
+          throw err;
+        }
+      }
+    }
+    
+    // Should never reach here, but just in case
+    throw lastError || new Error(`Failed to fetch pool ${liquidityPoolId}`);
   }
   public async addLiquidity(
     userSecret: string,

@@ -114,7 +114,8 @@ export class AccountService {
     
     // First, try a direct HTTP test to verify account exists (bypasses SDK issues)
     // This helps diagnose if it's a SDK problem or real 404
-    let directHttpTest: { exists: boolean; error?: any } | null = null;
+    // Also store the account data from HTTP response as fallback if SDK fails
+    let directHttpTest: { exists: boolean; accountData?: any; error?: any } | null = null;
     try {
       const horizonUrl = env.HORIZON_URL;
       const testUrl = `${horizonUrl}/accounts/${publicKey}`;
@@ -126,7 +127,7 @@ export class AccountService {
       });
       
       if (response.status === 200) {
-        directHttpTest = { exists: true };
+        directHttpTest = { exists: true, accountData: response.data };
         logger.info(`✅ Direct HTTP test confirms account ${publicKey} EXISTS on Pi Network Horizon`);
       } else if (response.status === 404) {
         directHttpTest = { exists: false };
@@ -160,10 +161,12 @@ export class AccountService {
             logger.info(`Fetching balances from ${serverName} for account ${publicKey} (attempt ${i + 1}/${servers.length})`);
             // Log the Horizon URL being used for debugging
             try {
-              const horizonUrl = (currentServer as any).serverURL?.toString() || env.HORIZON_URL;
-              logger.info(`Using Horizon URL: ${horizonUrl}`);
+              // Use env.HORIZON_URL directly instead of trying to read from SDK server object
+              // The SDK server object doesn't expose serverURL in a reliable way
+              const horizonUrl = env.HORIZON_URL;
+              logger.info(`Using Horizon URL: ${horizonUrl}/accounts/${publicKey}`);
             } catch (e) {
-              // Ignore if we can't access serverURL
+              // Ignore if we can't log the URL
             }
           }
           
@@ -351,23 +354,83 @@ export class AccountService {
         return { publicKey, balances: [], cached: false, accountExists: null };
         } else if (isNotFoundError) {
           // If direct HTTP test confirmed account exists, this is likely a SDK issue
-          if (directHttpTest?.exists === true) {
+          // Use the HTTP response data as fallback
+          if (directHttpTest?.exists === true && directHttpTest?.accountData) {
             logger.error(`🚨 CRITICAL: Direct HTTP test confirms account EXISTS, but SDK returned 404! This indicates a SDK/connection issue, not account not found.`);
-            logger.error(`Account ${publicKey} exists on Pi Network but SDK cannot fetch it. This is a connectivity/SDK problem.`);
+            logger.info(`Using HTTP response data as fallback since SDK failed but account exists`);
             
-            // Don't cache as "not found" if HTTP test says it exists
-            if (existingCachedBalances && existingCachedBalances.balances.length > 0) {
-              logger.warn(`Preserving existing cached balances - account exists but SDK failed`);
-              return {
-                publicKey,
-                balances: existingCachedBalances.balances,
-                cached: true,
-                accountExists: true
-              };
+            try {
+              // Parse account data from HTTP response (same format as SDK would return)
+              const httpAccountData = directHttpTest.accountData;
+              
+              const THRESHOLD = 0.1;
+              const balances = (httpAccountData.balances || [])
+                .map((b: any) => {
+                  const amountNum =
+                    typeof b.balance === 'string' ? parseFloat(b.balance) : Number(b.balance || 0);
+
+                  let assetLabel: string;
+                  if (b.asset_type === 'native') {
+                    assetLabel = 'Test Pi';
+                  } else if (b.asset_type === 'liquidity_pool_shares') {
+                    assetLabel = `liquidity_pool:${b.liquidity_pool_id || 'unknown'}`;
+                  } else {
+                    assetLabel = `${b.asset_code}:${b.asset_issuer}`;
+                  }
+
+                  return {
+                    assetType: b.asset_type,
+                    assetCode: b.asset_code || 'Test Pi',
+                    assetIssuer: b.asset_issuer || null,
+                    asset: assetLabel,
+                    amount: amountNum,
+                    raw: b.balance,
+                  };
+                })
+                .filter((entry: any) => {
+                  if (Number.isNaN(entry.amount)) return false;
+                  return entry.amount > THRESHOLD;
+                });
+
+              // Cache the balances from HTTP response
+              if (useCache) {
+                try {
+                  const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
+                  await BalanceCache.findOneAndUpdate(
+                    { publicKey },
+                    {
+                      publicKey,
+                      balances,
+                      accountExists: true,
+                      lastFetched: new Date(),
+                      expiresAt,
+                    },
+                    { upsert: true, new: true }
+                  );
+                } catch (dbError) {
+                  logger.warn(`Failed to save balance cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+                }
+              }
+
+              logger.info(`✅ Successfully parsed balances from HTTP response for account ${publicKey} (${balances.length} assets) - SDK workaround`);
+              return { publicKey, balances, cached: false, accountExists: true };
+            } catch (parseError: any) {
+              logger.error(`Failed to parse account data from HTTP response: ${parseError?.message || String(parseError)}`);
+              
+              // Fall back to cached balances if available
+              if (existingCachedBalances && existingCachedBalances.balances.length > 0) {
+                logger.warn(`Preserving existing cached balances - account exists but SDK and HTTP parsing failed`);
+                return {
+                  publicKey,
+                  balances: existingCachedBalances.balances,
+                  cached: true,
+                  accountExists: true
+                };
+              }
+              
+              // Return empty but don't mark as "not found"
+              return { publicKey, balances: [], cached: false, accountExists: null };
             }
-            
-            // Return empty but don't mark as "not found"
-            return { publicKey, balances: [], cached: false, accountExists: null };
           }
           
           if (!existingCachedBalances || existingCachedBalances.balances.length === 0) {
