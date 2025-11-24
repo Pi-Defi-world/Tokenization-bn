@@ -182,7 +182,9 @@ export class PoolService {
         const cached = await PoolCache.findOne({ 
           cacheKey: 'all-pools',
           expiresAt: { $gt: new Date() }
-        });
+        })
+        .select('pools expiresAt')
+        .lean();
 
         if (cached) {
           logger.info(`Using cached pools (from DB, expires: ${cached.expiresAt.toISOString()})`);
@@ -278,7 +280,9 @@ export class PoolService {
     } catch (err: any) {
       if (useCache && !cursor) {
         try {
-          const cached = await PoolCache.findOne({ cacheKey: 'all-pools' });
+          const cached = await PoolCache.findOne({ cacheKey: 'all-pools' })
+          .select('pools')
+          .lean();
           if (cached && cached.pools.length > 0) {
             logger.warn(`Pool fetch failed, returning cached pools. Error: ${err?.message || String(err)}`);
             return {
@@ -308,7 +312,9 @@ export class PoolService {
         const cached = await PoolCache.findOne({ 
           cacheKey,
           expiresAt: { $gt: new Date() }
-        });
+        })
+        .select('pools expiresAt')
+        .lean();
 
         if (cached && cached.pools && cached.pools.length > 0) {
           const cachedPool = cached.pools[0];
@@ -325,7 +331,9 @@ export class PoolService {
         const pairCaches = await PoolCache.find({ 
           cacheKey: { $regex: /^pair:/ },
           expiresAt: { $gt: new Date() }
-        });
+        })
+        .select('pools cacheKey')
+        .lean();
         
         for (const cached of pairCaches) {
           if (cached.pools && Array.isArray(cached.pools)) {
@@ -354,7 +362,9 @@ export class PoolService {
         const allPoolsCache = await PoolCache.findOne({ 
           cacheKey: 'all-pools',
           expiresAt: { $gt: new Date() }
-        });
+        })
+        .select('pools')
+        .lean();
         
         if (allPoolsCache && allPoolsCache.pools && Array.isArray(allPoolsCache.pools)) {
           const foundPool = allPoolsCache.pools.find((p: any) => p.id === liquidityPoolId);

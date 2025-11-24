@@ -6,6 +6,7 @@ import { logger } from '../utils/logger';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import env from '../config/env';
 import axios from 'axios';
+import { horizonQueue } from '../utils/horizon-queue';
 
 export interface ImportAccountInput {
   mnemonic?: string;
@@ -112,19 +113,23 @@ export class AccountService {
       const testUrl = `${horizonUrl}/accounts/${publicKey}`;
       logger.info(`🔍 Testing account existence via direct HTTP: ${testUrl}`);
       
-      const response = await axios.get(testUrl, { 
+      // Use horizon queue for rate-limited requests
+      const response = await horizonQueue.get<any>(testUrl, {
         timeout: 10000,
-        validateStatus: (status) => status < 500  
-      });
+        validateStatus: (status: number) => status < 500  
+      }, 1); // High priority for account existence checks
       
-      if (response.status === 200) {
-        directHttpTest = { exists: true, accountData: response.data };
-        logger.info(`✅ Direct HTTP test confirms account ${publicKey} EXISTS on Pi Network Horizon`);
-      } else if (response.status === 404) {
-        directHttpTest = { exists: false };
-        logger.warn(`⚠️ Direct HTTP test confirms account ${publicKey} does NOT exist (404)`);
-      } else {
-        logger.warn(`⚠️ Direct HTTP test returned unexpected status: ${response.status}`);
+      if (response && typeof response === 'object' && 'status' in response) {
+        const httpResponse = response as { status: number; data?: any };
+        if (httpResponse.status === 200) {
+          directHttpTest = { exists: true, accountData: httpResponse.data };
+          logger.info(`✅ Direct HTTP test confirms account ${publicKey} EXISTS on Pi Network Horizon`);
+        } else if (httpResponse.status === 404) {
+          directHttpTest = { exists: false };
+          logger.warn(`⚠️ Direct HTTP test confirms account ${publicKey} does NOT exist (404)`);
+        } else {
+          logger.warn(`⚠️ Direct HTTP test returned unexpected status: ${httpResponse.status}`);
+        }
       }
     } catch (httpError: any) {
       logger.warn(`Direct HTTP test failed (this is OK, will try SDK): ${httpError?.message || String(httpError)}`);
@@ -493,10 +498,14 @@ export class AccountService {
             operationsUrl += `&cursor=${cursor}`;
           }
 
-          const response = await axios.get(operationsUrl, { timeout: 10000 });
-          if (response.status === 200 && response.data._embedded && response.data._embedded.records) {
-            logger.info(`✅ Successfully fetched operations via HTTP fallback for account ${publicKey}`);
-            return this.formatOperations(response.data._embedded.records, publicKey, limit, order);
+          // Use horizon queue for rate-limited requests
+          const response = await horizonQueue.get<any>(operationsUrl, { timeout: 10000 }, 0);
+          if (response && typeof response === 'object' && 'status' in response && 'data' in response) {
+            const httpResponse = response as { status: number; data?: any };
+            if (httpResponse.status === 200 && httpResponse.data?._embedded?.records) {
+              logger.info(`✅ Successfully fetched operations via HTTP fallback for account ${publicKey}`);
+              return this.formatOperations(httpResponse.data._embedded.records, publicKey, limit, order);
+            }
           }
         } catch (httpError: any) {
           logger.error(`HTTP fallback also failed for operations: ${httpError?.message || String(httpError)}`);

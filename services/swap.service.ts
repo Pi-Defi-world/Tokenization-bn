@@ -15,10 +15,7 @@ class SwapService {
     this.accountService = new AccountService();
   }
 
-  /**
-   * Load account with HTTP fallback when SDK fails
-   * This is needed because SDK's loadAccount() sometimes returns 404 even when account exists
-   */
+   
   private async loadAccountWithFallback(publicKey: string): Promise<any> {
     try {
       return await server.loadAccount(publicKey);
@@ -445,7 +442,9 @@ class SwapService {
         const cached = await require('../models/PoolCache').default.findOne({ 
           cacheKey,
           expiresAt: { $gt: new Date() }
-        });
+        })
+        .select('pools expiresAt')
+        .lean();
 
         if (cached) {
           logger.info(`Using cached pools for pair ${tokenA}/${tokenB} (from DB, expires: ${cached.expiresAt.toISOString()})`);
@@ -553,7 +552,9 @@ class SwapService {
       if (useCache) {
         try {
           const PoolCache = require('../models/PoolCache').default;
-          const cached = await PoolCache.findOne({ cacheKey });
+          const cached = await PoolCache.findOne({ cacheKey })
+          .select('pools')
+          .lean();
           if (cached && cached.pools.length > 0) {
             logger.warn(`Pool fetch failed for pair ${tokenA}/${tokenB}, returning cached pools. Error: ${err?.message || String(err)}`);
             // Filter out empty pools from cached results

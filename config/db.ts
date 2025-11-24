@@ -10,16 +10,23 @@ export const connectDB = async () => {
   }
 
   try {
-    await mongoose.connect(mongoURI);
-    logger.success('MongoDB connected');
+    await mongoose.connect(mongoURI, {
+      maxPoolSize: 50, // Maximum number of connections in the pool
+      minPoolSize: 10, // Minimum number of connections to maintain
+      maxIdleTimeMS: 30000, // Close connections after 30s of inactivity
+      serverSelectionTimeoutMS: 5000, // How long to wait for server selection
+      socketTimeoutMS: 45000, // How long to wait for socket operations
+      connectTimeoutMS: 10000, // How long to wait for initial connection
+      // Note: bufferMaxEntries and bufferCommands are not available in Mongoose 8.x
+      // Mongoose 8.x disables buffering by default when not connected
+    });
+    logger.success('MongoDB connected with optimized connection pool');
     
-    // Ensure Passkey model indexes are created
     try {
       await Passkey.createIndexes();
       logger.info('Passkey collection indexes verified');
     } catch (indexError: any) {
       logger.warn(`Passkey index creation warning: ${indexError.message}`);
-      // Don't fail connection if index creation has issues (might already exist)
     }
   } catch (error: any) {
     logger.error('MongoDB connection error:', error.message || error);
