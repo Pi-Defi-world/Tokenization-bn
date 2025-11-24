@@ -111,10 +111,6 @@ export class AccountService {
         logger.info(`Retrying fetch for account ${publicKey} - previous "not found" cache is ${Math.round(cacheAge / 1000)}s old (account may exist now)`);
       }
     }
-    
-    // First, try a direct HTTP test to verify account exists (bypasses SDK issues)
-    // This helps diagnose if it's a SDK problem or real 404
-    // Also store the account data from HTTP response as fallback if SDK fails
     let directHttpTest: { exists: boolean; accountData?: any; error?: any } | null = null;
     try {
       const horizonUrl = env.HORIZON_URL;
@@ -123,7 +119,7 @@ export class AccountService {
       
       const response = await axios.get(testUrl, { 
         timeout: 10000,
-        validateStatus: (status) => status < 500 // Don't throw on 404, only on server errors
+        validateStatus: (status) => status < 500  
       });
       
       if (response.status === 200) {
@@ -159,14 +155,10 @@ export class AccountService {
             logger.info(`Retrying ${serverName} for account ${publicKey} (retry ${retryCount}/${MAX_RETRIES_PER_SERVER - 1})`);
           } else {
             logger.info(`Fetching balances from ${serverName} for account ${publicKey} (attempt ${i + 1}/${servers.length})`);
-            // Log the Horizon URL being used for debugging
             try {
-              // Use env.HORIZON_URL directly instead of trying to read from SDK server object
-              // The SDK server object doesn't expose serverURL in a reliable way
               const horizonUrl = env.HORIZON_URL;
               logger.info(`Using Horizon URL: ${horizonUrl}/accounts/${publicKey}`);
             } catch (e) {
-              // Ignore if we can't log the URL
             }
           }
           
@@ -488,18 +480,57 @@ export class AccountService {
     const { publicKey, limit = 20, cursor, order = 'desc' } = params;
     if (!publicKey) throw new Error('publicKey is required');
 
-    let builder = server.operations().forAccount(publicKey).limit(limit).order(order);
-    if (cursor) builder = builder.cursor(cursor);
+    try {
+      let builder = server.operations().forAccount(publicKey).limit(limit).order(order);
+      if (cursor) builder = builder.cursor(cursor);
 
-    const ops = await builder.call();
+      const ops = await builder.call();
+      return this.formatOperations(ops.records, publicKey, limit, order);
+    } catch (error: any) {
+      // If SDK fails with 404, try HTTP fallback
+      const isNotFoundError =
+        error?.response?.status === 404 ||
+        error?.constructor?.name === 'NotFoundError' ||
+        (error?.response?.data?.type === 'https://stellar.org/horizon-errors/not_found') ||
+        (error?.response?.data?.status === 404) ||
+        (error?.message && (
+          error.message.toLowerCase().includes('not found') ||
+          error.message.toLowerCase().includes('404')
+        ));
 
-    const records = ops.records.map((op: any) => {
+      if (isNotFoundError) {
+        logger.warn(`SDK failed to fetch operations for ${publicKey}, trying HTTP fallback...`);
+        try {
+          const horizonUrl = env.HORIZON_URL;
+          let operationsUrl = `${horizonUrl}/accounts/${publicKey}/operations?limit=${limit}&order=${order}`;
+          if (cursor) {
+            operationsUrl += `&cursor=${cursor}`;
+          }
+
+          const response = await axios.get(operationsUrl, { timeout: 10000 });
+          if (response.status === 200 && response.data._embedded && response.data._embedded.records) {
+            logger.info(`✅ Successfully fetched operations via HTTP fallback for account ${publicKey}`);
+            return this.formatOperations(response.data._embedded.records, publicKey, limit, order);
+          }
+        } catch (httpError: any) {
+          logger.error(`HTTP fallback also failed for operations: ${httpError?.message || String(httpError)}`);
+        }
+      }
+ 
+      logger.error(`❌ getAccountOperations failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  private formatOperations(ops: any[], publicKey: string, limit: number, order: 'asc' | 'desc') {
+    const records = ops.map((op: any) => {
       const base = {
         id: op.id,
         createdAt: op.created_at,
         type: op.type,
         source: op.source_account,
         transactionHash: op.transaction_hash,
+        paging_token: op.paging_token || null,
       };
 
       switch (op.type) {
@@ -577,8 +608,8 @@ export class AccountService {
       }
     });
 
-    const nextCursor = records.length
-      ? records[records.length - 1].paging_token
+    const nextCursor = records.length && (records[records.length - 1] as any).paging_token
+      ? (records[records.length - 1] as any).paging_token
       : null;
 
     return {

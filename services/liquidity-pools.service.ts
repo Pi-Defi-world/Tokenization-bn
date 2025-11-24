@@ -198,11 +198,13 @@ export class PoolService {
 
     try {
       let builder = server.liquidityPools().limit(limit);
-      // Only use cursor if it's a valid paging token (not a transaction hash)
-      // Cursor should be a base64-encoded string, not a hex transaction hash
-      if (cursor && cursor.length > 0 && !cursor.match(/^[0-9a-f]{64}$/i)) {
-        // Only set cursor if it doesn't look like a transaction hash
-        builder = builder.cursor(cursor);
+      if (cursor && cursor.length > 0) {
+        const isHexHash = /^[0-9a-f]{64}$/i.test(cursor);
+        if (!isHexHash) {
+          builder = builder.cursor(cursor);
+        } else {
+          logger.warn(`⚠️ Cursor looks like a hex hash (pool ID?), skipping cursor. Use paging_token instead.`);
+        }
       }
 
       const pools = await builder.call();
@@ -220,20 +222,14 @@ export class PoolService {
         );
       });
 
-      // Get next cursor from the response links, not from paging_token
       let nextCursor: string | undefined = undefined;
       try {
-        // Check if there's a next page in the response
-        if (pools.records.length === limit) {
-          // Use the last record's ID as cursor (safer than paging_token)
-          const lastRecord = pools.records[pools.records.length - 1];
-          nextCursor = lastRecord?.id;
+        if (pools.records.length === limit && pools.paging_token) {
+          nextCursor = pools.paging_token;
         }
       } catch (e) {
-        // Ignore cursor extraction errors
       }
 
-      // Cache the results (only cache first page without cursor)
       if (useCache && !cursor) {
         try {
           const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
@@ -257,7 +253,6 @@ export class PoolService {
         nextCursor
       };
     } catch (err: any) {
-      // If fetch fails, try to return cached data
       if (useCache && !cursor) {
         try {
           const cached = await PoolCache.findOne({ cacheKey: 'all-pools' });
@@ -269,7 +264,6 @@ export class PoolService {
             };
           }
         } catch (cacheError) {
-          // Ignore cache errors
         }
       }
       
@@ -286,7 +280,6 @@ export class PoolService {
     const cacheKey = `pool:${liquidityPoolId}`;
     const CACHE_TTL_MS = 300000; // 5 minutes
     
-    // Check cache first
     if (useCache) {
       try {
         const cached = await PoolCache.findOne({ 
@@ -304,11 +297,8 @@ export class PoolService {
       }
     }
     
-    // Try to find pool in cached pool lists (from getPoolsForPair or getLiquidityPools)
-    // This helps when pool was in list but individual fetch fails
     if (useCache) {
       try {
-        // Check pair caches (from getPoolsForPair)
         const pairCaches = await PoolCache.find({ 
           cacheKey: { $regex: /^pair:/ },
           expiresAt: { $gt: new Date() }
@@ -319,7 +309,6 @@ export class PoolService {
             const foundPool = cached.pools.find((p: any) => p.id === liquidityPoolId);
             if (foundPool) {
               logger.info(`✅ Found pool ${liquidityPoolId} in cached pool list (pair cache)`);
-              // Cache it individually for faster future access
               try {
                 const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
                 await PoolCache.findOneAndUpdate(
@@ -333,14 +322,12 @@ export class PoolService {
                   { upsert: true, new: true }
                 );
               } catch (e) {
-                // Ignore cache save errors
               }
               return foundPool;
             }
           }
         }
         
-        // Check "all-pools" cache (from getLiquidityPools)
         const allPoolsCache = await PoolCache.findOne({ 
           cacheKey: 'all-pools',
           expiresAt: { $gt: new Date() }
@@ -350,7 +337,6 @@ export class PoolService {
           const foundPool = allPoolsCache.pools.find((p: any) => p.id === liquidityPoolId);
           if (foundPool) {
             logger.info(`✅ Found pool ${liquidityPoolId} in cached all-pools list`);
-            // Cache it individually for faster future access
             try {
               const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
               await PoolCache.findOneAndUpdate(
@@ -364,18 +350,15 @@ export class PoolService {
                 { upsert: true, new: true }
               );
             } catch (e) {
-              // Ignore cache save errors
             }
             return foundPool;
           }
         }
       } catch (dbError) {
-        // Ignore errors when searching cached pools
         logger.warn(`Error searching cached pools: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
       }
     }
     
-    // Fetch from Horizon with retry logic
     let lastError: any = null;
     const MAX_RETRIES = 2;
     
@@ -391,7 +374,6 @@ export class PoolService {
         const pool = await server.liquidityPools().liquidityPoolId(liquidityPoolId).call();
         logger.info(`🔹 Pool found: ${pool.id} | Assets: ${pool.reserves.map((r: any) => r.asset).join(' & ')}`);
         
-        // Cache the pool
         if (useCache) {
           try {
             const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
@@ -414,7 +396,6 @@ export class PoolService {
       } catch (err: any) {
         lastError = err;
         
-        // Check if it's a "not found" error
         const isNotFoundError =
           err?.response?.status === 404 ||
           err?.constructor?.name === 'NotFoundError' ||
@@ -422,26 +403,21 @@ export class PoolService {
           (err?.response?.data?.status === 404);
         
         if (isNotFoundError && attempt < MAX_RETRIES) {
-          // Retry once more in case it's a temporary Horizon issue
           continue;
         } else if (isNotFoundError) {
-          // Pool truly not found - clear any stale cache entries
           if (useCache) {
             try {
               await PoolCache.deleteMany({ cacheKey });
-              // Also remove from pair caches
               await PoolCache.updateMany(
                 { cacheKey: { $regex: /^pair:/ } },
                 { $pull: { pools: { id: liquidityPoolId } } }
               );
             } catch (e) {
-              // Ignore cache cleanup errors
             }
           }
           logger.error(`❌ Pool ${liquidityPoolId} not found on Pi Network Horizon after ${MAX_RETRIES} attempts`);
           throw new Error(`Liquidity pool ${liquidityPoolId} not found. The pool may have been removed or dissolved.`);
         } else {
-          // Other errors - retry if we have attempts left
           if (attempt < MAX_RETRIES) {
             continue;
           }
@@ -451,7 +427,6 @@ export class PoolService {
       }
     }
     
-    // Should never reach here, but just in case
     throw lastError || new Error(`Failed to fetch pool ${liquidityPoolId}`);
   }
   public async addLiquidity(
@@ -502,7 +477,6 @@ export class PoolService {
       const result = await server.submitTransaction(tx);
       logger.success(`✅ Added liquidity successfully`);
       
-      // Clear pool cache after adding liquidity
       PoolCache.deleteMany({}).catch((err: any) => {
         logger.warn(`Failed to clear pool cache after adding liquidity: ${err?.message || String(err)}`);
       });
@@ -548,7 +522,6 @@ export class PoolService {
       const result = await server.submitTransaction(tx);
       logger.success(`💧 Liquidity withdrawn successfully`);
       
-      // Clear pool cache after removing liquidity
       PoolCache.deleteMany({}).catch((err: any) => {
         logger.warn(`Failed to clear pool cache after removing liquidity: ${err?.message || String(err)}`);
       });
@@ -562,11 +535,9 @@ export class PoolService {
 
   public async getPoolRewards(userPublicKey: string, poolId: string) {
     try {
-      // Fetch pool and user account info
       const pool = await this.getLiquidityPoolById(poolId);
       const userAccount = await server.loadAccount(userPublicKey);
   
-      // Find user's LP balance (shares)
       const lpBalance = userAccount.balances.find(
         (b: any) => b.liquidity_pool_id === poolId
       );
@@ -578,8 +549,6 @@ export class PoolService {
       const totalShares = parseFloat(pool.total_shares);
       const userShares = parseFloat(lpBalance.balance);
       const userPercentage = userShares / totalShares;
-  
-      // Calculate proportional rewards
       const rewards = pool.reserves.map((res: any) => ({
         asset: res.asset,
         earnedFees: (parseFloat(res.amount) * userPercentage).toFixed(7),
