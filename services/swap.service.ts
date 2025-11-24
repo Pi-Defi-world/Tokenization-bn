@@ -275,9 +275,16 @@ class SwapService {
       const toAsset =
         actualToCode === 'native' ? StellarSdk.Asset.native() : getAsset(actualToCode, actualToIssuer);
 
+      // Load account BEFORE trustline creation to get initial sequence
+      let initialAccount = await this.loadAccountWithFallback(publicKey);
+      const initialSequence = initialAccount.sequenceNumber ? initialAccount.sequenceNumber() : '0';
+      logger.info(`🔹 Initial account sequence before trustline: ${initialSequence}`);
+
       if (actualToCode !== 'native') {
         await this.ensureTrustline(userSecret, actualToCode, actualToIssuer);
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // Wait longer after trustline creation to ensure Horizon has updated
+        logger.info(`🔹 Waiting for Horizon to propagate trustline changes...`);
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Increased to 2 seconds
       }
 
       const fee = pool.fee_bp / 10000;
@@ -292,7 +299,7 @@ class SwapService {
         (inputAfterFee * outputReserve) / (inputReserve + inputAfterFee);
       const minDestAmount = (outputAmount * (1 - slippagePercent / 100)).toFixed(7);
 
-      // Load account for balance check (before trustline creation)
+      // Load account for balance check (after trustline creation)
       const account = await this.loadAccountWithFallback(publicKey);
 
       if (!account.balances || !Array.isArray(account.balances)) {
@@ -341,38 +348,46 @@ class SwapService {
         }
       }
       // Reload account after trustline creation to get updated sequence number
-      // CRITICAL: For transactions, we MUST use SDK - HTTP fallback is only for reading data
-      // After trustline creation, SDK should work - retry with small delay
+      // CRITICAL: Sequence number must be incremented after trustline transaction
       let finalAccount: any;
       let retries = 0;
-      const maxRetries = 5; // Increased retries
+      const maxRetries = 5;
       
-      // Wait a bit longer after trustline creation to ensure Horizon has propagated
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      logger.info(`🔹 Reloading account after trustline creation to get updated sequence...`);
       
       while (retries < maxRetries) {
         try {
           // Additional delay for retries
           if (retries > 0) {
-            await new Promise(resolve => setTimeout(resolve, 1500 * retries));
-            logger.info(`Retrying SDK account load after trustline (attempt ${retries + 1}/${maxRetries})...`);
+            const delay = 2000 * retries; // 2s, 4s, 6s, 8s
+            logger.info(`Retrying SDK account load after trustline (attempt ${retries + 1}/${maxRetries}) in ${delay}ms...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
           }
           
           // Use SDK - this is required for proper transaction building
           finalAccount = await server.loadAccount(publicKey);
-          logger.info(`✅ Reloaded account via SDK after trustline creation (sequence: ${finalAccount.sequenceNumber()})`);
+          const newSequence = finalAccount.sequenceNumber();
+          logger.info(`✅ Reloaded account via SDK (sequence: ${newSequence}, was: ${initialSequence})`);
+          
+          // Verify sequence has increased (trustline transaction should increment it)
+          if (actualToCode !== 'native') {
+            const seqNum = BigInt(newSequence);
+            const initSeq = BigInt(initialSequence);
+            if (seqNum <= initSeq) {
+              logger.warn(`⚠️ Sequence number may not have updated yet (${newSequence} <= ${initialSequence}). Waiting...`);
+              if (retries < maxRetries - 1) {
+                retries++;
+                continue;
+              }
+            }
+          }
+          
           break;
         } catch (sdkError: any) {
           retries++;
-          const isNotFoundError =
-            sdkError?.response?.status === 404 ||
-            sdkError?.constructor?.name === 'NotFoundError' ||
-            (sdkError?.response?.data?.type === 'https://stellar.org/horizon-errors/not_found') ||
-            (sdkError?.response?.data?.status === 404);
           
           if (retries >= maxRetries) {
             // If SDK still fails after retries, try HTTP fallback as last resort
-            // But we need to ensure the account object is valid for TransactionBuilder
             logger.warn(`SDK failed after ${maxRetries} retries, trying HTTP fallback as last resort...`);
             try {
               const horizonUrl = env.HORIZON_URL;
@@ -381,9 +396,21 @@ class SwapService {
               
               if (response.status === 200 && response.data) {
                 const accountData = response.data;
+                const httpSequence = accountData.sequence;
+                logger.info(`✅ Using HTTP fallback account (sequence: ${httpSequence}, was: ${initialSequence})`);
+                
+                // Verify sequence has increased
+                if (actualToCode !== 'native') {
+                  const seqNum = BigInt(httpSequence);
+                  const initSeq = BigInt(initialSequence);
+                  if (seqNum <= initSeq) {
+                    logger.error(`❌ CRITICAL: Sequence number from HTTP fallback is not updated (${httpSequence} <= ${initialSequence}). Trustline transaction may not have propagated.`);
+                    throw new Error(`Account sequence not updated after trustline creation. Please wait a few seconds and try again.`);
+                  }
+                }
+                
                 // Create proper SDK Account object with correct sequence
-                finalAccount = new StellarSdk.Account(publicKey, accountData.sequence);
-                logger.info(`✅ Using HTTP fallback account (sequence: ${accountData.sequence})`);
+                finalAccount = new StellarSdk.Account(publicKey, httpSequence);
                 break;
               }
             } catch (httpError: any) {
@@ -404,6 +431,9 @@ class SwapService {
         logger.error(`❌ Invalid account object after reload: missing sequence number`);
         throw new Error(`Failed to load valid account object. Please try again.`);
       }
+      
+      const finalSequence = finalAccount.sequenceNumber();
+      logger.info(`🔹 Final account sequence for transaction: ${finalSequence}`);
       
       // For AMM swaps through liquidity pools, use empty path
       // The network will automatically route through available liquidity pools
@@ -451,6 +481,8 @@ class SwapService {
       
       let res;
       try {
+        logger.info(`🔹 Transaction XDR length: ${tx.toXDR().length} bytes`);
+        logger.info(`🔹 Transaction sequence: ${tx.sequenceNumber()}`);
         res = await server.submitTransaction(tx);
       } catch (submitError: any) {
         // Log detailed error information
@@ -459,7 +491,19 @@ class SwapService {
           logger.error(`Response data:`, submitError.response.data);
           if (submitError.response.data.extras) {
             logger.error(`Extras:`, submitError.response.data.extras);
+            if (submitError.response.data.extras.result_codes) {
+              logger.error(`Result codes:`, submitError.response.data.extras.result_codes);
+            }
+            if (submitError.response.data.extras.invalid_field) {
+              logger.error(`Invalid field:`, submitError.response.data.extras.invalid_field);
+            }
+            if (submitError.response.data.extras.reason) {
+              logger.error(`Reason:`, submitError.response.data.extras.reason);
+            }
           }
+        }
+        if (submitError?.response?.status) {
+          logger.error(`HTTP Status: ${submitError.response.status}`);
         }
         throw submitError;
       }

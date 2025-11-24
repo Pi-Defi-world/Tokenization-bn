@@ -2,6 +2,7 @@
 import { Request, Response } from "express";
 import { getAssetFromCodeIssuer } from "../../utils/asset";
 import { orderBookService } from "../../services/orderbook.service";
+import { tradeAnalyticsService } from "../../services/trade-analytics.service";
 import { logger } from "../../utils/logger";
 
 
@@ -45,7 +46,7 @@ export async function getOffersByAccountHandler(req: Request, res: Response) {
 
 export async function getTradesHandler(req: Request, res: Response) {
   try {
-    const { base, counter, limit } = req.query;
+    const { base, counter, limit, cursor, order } = req.query;
     if (!base || !counter) {
       return res.status(400).json({ success: false, message: "base and counter are required" });
     }
@@ -61,13 +62,28 @@ export async function getTradesHandler(req: Request, res: Response) {
 
     const baseAsset = getAssetFromCodeIssuer(String(base));
     const counterAsset = getAssetFromCodeIssuer(counterStr);
-    const limitNum = limit ? parseInt(String(limit), 10) : 20;
-    const validLimit = isNaN(limitNum) || limitNum <= 0 ? 20 : Math.min(limitNum, 100); // Max 100
+    const limitNum = limit ? parseInt(String(limit), 10) : 50;
+    const validLimit = isNaN(limitNum) || limitNum <= 0 ? 50 : Math.min(limitNum, 200); // Max 200
 
     logger.info(`📊 Fetching trades for ${base}/${counter}, limit: ${validLimit}`);
 
-    const trades = await orderBookService.getTrades(baseAsset, counterAsset, validLimit);
-    return res.json({ success: true, trades, count: trades.length });
+    // Use new trade analytics service
+    const baseAssetType = baseAsset.code === 'native' ? 'native' : 'credit_alphanum4';
+    const counterAssetType = counterAsset.code === 'native' ? 'native' : 'credit_alphanum4';
+
+    const result = await tradeAnalyticsService.getTrades({
+      baseAssetType,
+      baseAssetCode: baseAsset.code === 'native' ? undefined : baseAsset.code,
+      baseAssetIssuer: baseAsset.issuer,
+      counterAssetType,
+      counterAssetCode: counterAsset.code === 'native' ? undefined : counterAsset.code,
+      counterAssetIssuer: counterAsset.issuer,
+      cursor: cursor as string | undefined,
+      limit: validLimit,
+      order: (order as 'asc' | 'desc') || 'desc',
+    });
+
+    return res.json({ success: true, ...result, count: result.data.length });
   } catch (err: any) {
     logger.error("getTradesHandler", err);
     return res.status(500).json({ success: false, message: err.message || err.toString() });
@@ -76,31 +92,40 @@ export async function getTradesHandler(req: Request, res: Response) {
 
 export async function getTradeAggregationsHandler(req: Request, res: Response) {
   try {
-    const { base, counter, resolution, startTime, endTime, limit } = req.query;
+    const { base, counter, resolution, startTime, endTime, limit, offset } = req.query;
     if (!base || !counter) {
       return res.status(400).json({ success: false, message: "base and counter are required" });
     }
 
     const baseAsset = getAssetFromCodeIssuer(String(base));
     const counterAsset = getAssetFromCodeIssuer(String(counter));
-    const resolutionNum = resolution ? parseInt(String(resolution), 10) : 3600000; // Default 1 hour
-    const limitNum = limit ? parseInt(String(limit), 10) : 24;
-    const validLimit = isNaN(limitNum) || limitNum <= 0 ? 24 : Math.min(limitNum, 200); // Max 200
+    
+    // Resolution in seconds (not milliseconds) for Horizon API
+    const resolutionNum = resolution ? parseInt(String(resolution), 10) : 3600; // Default 1 hour in seconds
+    const limitNum = limit ? parseInt(String(limit), 10) : 200;
+    const validLimit = isNaN(limitNum) || limitNum <= 0 ? 200 : Math.min(limitNum, 200); // Max 200
 
-    const start = startTime ? new Date(String(startTime)) : undefined;
-    const end = endTime ? new Date(String(endTime)) : undefined;
+    logger.info(`📈 Fetching trade aggregations for ${base}/${counter}, resolution: ${resolutionNum}s, limit: ${validLimit}`);
 
-    logger.info(`📈 Fetching trade aggregations for ${base}/${counter}, resolution: ${resolutionNum}ms, limit: ${validLimit}`);
+    // Use new trade analytics service
+    const baseAssetType = baseAsset.code === 'native' ? 'native' : 'credit_alphanum4';
+    const counterAssetType = counterAsset.code === 'native' ? 'native' : 'credit_alphanum4';
 
-    const aggregations = await orderBookService.getTradeAggregations(
-      baseAsset,
-      counterAsset,
-      resolutionNum,
-      start,
-      end,
-      validLimit
-    );
-    return res.json({ success: true, aggregations, count: aggregations.length });
+    const result = await tradeAnalyticsService.getTradeAggregations({
+      baseAssetType,
+      baseAssetCode: baseAsset.code === 'native' ? undefined : baseAsset.code,
+      baseAssetIssuer: baseAsset.issuer,
+      counterAssetType,
+      counterAssetCode: counterAsset.code === 'native' ? undefined : counterAsset.code,
+      counterAssetIssuer: counterAsset.issuer,
+      startTime: startTime ? new Date(String(startTime)).toISOString() : undefined,
+      endTime: endTime ? new Date(String(endTime)).toISOString() : undefined,
+      resolution: resolutionNum,
+      offset: offset ? Number(offset) : undefined,
+      limit: validLimit,
+    });
+
+    return res.json({ success: true, ...result, count: result.data.length });
   } catch (err: any) {
     logger.error("getTradeAggregationsHandler", err);
     return res.status(500).json({ success: false, message: err.message || err.toString() });
