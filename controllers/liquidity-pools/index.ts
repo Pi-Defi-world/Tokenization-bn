@@ -1,8 +1,10 @@
 import { Request, Response } from 'express';
 import { PoolService } from '../../services/liquidity-pools.service';
+import { AccountService } from '../../services/account.service';
 import { logger } from '../../utils/logger';
 
 const poolService = new PoolService();
+const accountService = new AccountService();
 
 export const createLiquidityPool = async (req: Request, res: Response) => {
   try {
@@ -26,7 +28,27 @@ export const createLiquidityPool = async (req: Request, res: Response) => {
     return res.status(201).json(result);
   } catch (error: any) {
     logger.error('createLiquidityPool failed:', error);
-    const reason = typeof error === 'string' ? error : undefined;
+    
+    // Handle pool exists error
+    if (error.poolExists && error.poolId) {
+      return res.status(409).json({
+        message: `Pool already exists for ${req.body.tokenA?.code}/${req.body.tokenB?.code}`,
+        poolExists: true,
+        poolId: error.poolId,
+        existingPool: error.existingPool,
+        suggestion: 'Use the deposit endpoint to add liquidity to the existing pool',
+      });
+    }
+
+    // Handle insufficient balance error
+    if (error.message && error.message.includes('Insufficient balance')) {
+      return res.status(400).json({
+        message: error.message,
+        reason: error.message,
+      });
+    }
+
+    const reason = typeof error === 'string' ? error : (error.message || undefined);
     return res.status(500).json({ message: 'Failed to create liquidity pool', reason });
   }
 };
@@ -157,6 +179,62 @@ export const getUserLiquidityPools = async (req: Request, res: Response) => {
   } catch (error: any) {
     logger.error('getUserLiquidityPools failed:', error);
     return res.status(500).json({ message: 'Failed to fetch liquidity pools for user' });
+  }
+};
+
+export const getUserTokens = async (req: Request, res: Response) => {
+  try {
+    const publicKey =
+      (typeof req.query.publicKey === 'string' && req.query.publicKey) ||
+      (typeof req.params.publicKey === 'string' && req.params.publicKey);
+
+    if (!publicKey) {
+      return res.status(400).json({ message: 'publicKey is required' });
+    }
+
+    const useCache = req.query.cache !== 'false';
+    const result = await accountService.getBalances(publicKey, useCache);
+
+    // Filter out liquidity pool shares and return only owned tokens
+    const tokens = result.balances
+      .filter((balance: any) => {
+        // Exclude liquidity pool shares
+        return balance.assetType !== 'liquidity_pool_shares';
+      })
+      .map((balance: any) => {
+        // Format token information
+        return {
+          code: balance.assetCode,
+          issuer: balance.assetIssuer || null,
+          amount: balance.amount,
+          assetType: balance.assetType,
+        };
+      });
+
+    return res.status(200).json({
+      publicKey,
+      tokens,
+      cached: result.cached,
+    });
+  } catch (error: any) {
+    logger.error('getUserTokens failed:', error);
+    return res.status(500).json({ message: 'Failed to fetch user tokens' });
+  }
+};
+
+export const getPlatformPools = async (req: Request, res: Response) => {
+  try {
+    const useCache = req.query.cache !== 'false';
+
+    const pools = await poolService.getPlatformPools(useCache);
+
+    return res.status(200).json({
+      pools,
+      count: pools.length,
+    });
+  } catch (error: any) {
+    logger.error('getPlatformPools failed:', error);
+    return res.status(500).json({ message: 'Failed to fetch platform pools' });
   }
 };
 

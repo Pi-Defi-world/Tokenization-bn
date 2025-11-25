@@ -3,8 +3,40 @@ import { server, getAsset } from '../config/stellar';
 import env from '../config/env';
 import { logger } from '../utils/logger';
 import PoolCache from '../models/PoolCache';
+import { Pair } from '../models/Pair';
+import { AccountService } from './account.service';
 
 export class PoolService {
+  private accountService: AccountService;
+
+  constructor() {
+    this.accountService = new AccountService();
+  }
+
+  private isPoolEmpty(pool: any): boolean {
+    if (!pool || !pool.reserves || pool.reserves.length < 2) {
+      return true;
+    }
+    
+    const [resA, resB] = pool.reserves;
+    const amountA = parseFloat(resA.amount || '0');
+    const amountB = parseFloat(resB.amount || '0');
+    const totalShares = parseFloat(pool.total_shares || '0');
+    
+    // Pool is empty if:
+    // - Total shares is 0 or very close to 0
+    // - OR both reserves are 0 or very close to 0
+    // - OR any reserve is 0 or very close to 0
+    const MIN_THRESHOLD = 0.0000001; // Very small threshold to account for floating point precision
+    
+    return (
+      totalShares < MIN_THRESHOLD ||
+      (amountA < MIN_THRESHOLD && amountB < MIN_THRESHOLD) ||
+      amountA < MIN_THRESHOLD ||
+      amountB < MIN_THRESHOLD
+    );
+  }
+
   private async ensureTrustline(userSecret: string, assetCode: string, issuer: string) {
     // Native assets don't need trustlines
     if (assetCode === 'native' || !issuer) {
@@ -63,6 +95,139 @@ export class PoolService {
     }
   }
 
+  public async checkPoolExists(
+    tokenA: { code: string; issuer: string },
+    tokenB: { code: string; issuer: string },
+    useCache: boolean = true
+  ): Promise<{ exists: boolean; pool?: any; poolId?: string } | null> {
+    try {
+      // Normalize token codes for cache key
+      const tokenACode = tokenA.code === 'native' ? 'native' : tokenA.code.toUpperCase();
+      const tokenBCode = tokenB.code === 'native' ? 'native' : tokenB.code.toUpperCase();
+      
+      // Check both directions (A/B and B/A) since pools can be created either way
+      const cacheKey1 = `pair:${tokenACode}:${tokenBCode}`;
+      const cacheKey2 = `pair:${tokenBCode}:${tokenACode}`;
+      const CACHE_TTL_MS = 300000; // 5 minutes
+
+      // Check cache first
+      if (useCache) {
+        try {
+          // Try first direction
+          let cached = await PoolCache.findOne({ 
+            cacheKey: cacheKey1,
+            expiresAt: { $gt: new Date() }
+          })
+          .select('pools expiresAt')
+          .lean();
+
+          // If not found, try reverse direction
+          if (!cached) {
+            cached = await PoolCache.findOne({ 
+              cacheKey: cacheKey2,
+              expiresAt: { $gt: new Date() }
+            })
+            .select('pools expiresAt')
+            .lean();
+          }
+
+          if (cached && cached.pools && Array.isArray(cached.pools) && cached.pools.length > 0) {
+            // Filter out empty pools
+            const nonEmptyPools = cached.pools.filter((pool: any) => !this.isPoolEmpty(pool));
+            
+            if (nonEmptyPools.length > 0) {
+              // Find the pool that matches both tokens exactly
+              for (const pool of nonEmptyPools) {
+                const assets = pool.reserves.map((r: any) => {
+                  const assetStr = r.asset || "";
+                  if (assetStr === "native") return { code: "native", issuer: "" };
+                  const parts = assetStr.split(':');
+                  return { code: parts[0] || "", issuer: parts[1] || "" };
+                });
+
+                const matchesTokenA = assets.some((a: any) => 
+                  a.code === tokenA.code && 
+                  (tokenA.code === 'native' || a.issuer === tokenA.issuer)
+                );
+                const matchesTokenB = assets.some((a: any) => 
+                  a.code === tokenB.code && 
+                  (tokenB.code === 'native' || a.issuer === tokenB.issuer)
+                );
+
+                if (matchesTokenA && matchesTokenB) {
+                  logger.info(`✅ Found existing pool in cache for ${tokenA.code}/${tokenB.code}: ${pool.id}`);
+                  return { exists: true, pool, poolId: pool.id };
+                }
+              }
+            }
+          }
+        } catch (dbError) {
+          logger.warn(`Error reading from pool cache DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+        }
+      }
+
+      // If not in cache, search through pools
+      logger.info(`🔹 Checking if pool exists for pair: ${tokenA.code}/${tokenB.code}`);
+      
+      // Try to get pools for this pair (limit to first few to avoid long searches)
+      const result = await this.getLiquidityPools(50, undefined, useCache);
+      
+      for (const pool of result.records) {
+        if (this.isPoolEmpty(pool)) {
+          continue;
+        }
+
+        const assets = pool.reserves.map((r: any) => {
+          const assetStr = r.asset || "";
+          if (assetStr === "native") return { code: "native", issuer: "" };
+          const parts = assetStr.split(':');
+          return { code: parts[0] || "", issuer: parts[1] || "" };
+        });
+
+        const matchesTokenA = assets.some((a: any) => 
+          a.code === tokenA.code && 
+          (tokenA.code === 'native' || a.issuer === tokenA.issuer)
+        );
+        const matchesTokenB = assets.some((a: any) => 
+          a.code === tokenB.code && 
+          (tokenB.code === 'native' || a.issuer === tokenB.issuer)
+        );
+
+        if (matchesTokenA && matchesTokenB) {
+          logger.info(`✅ Found existing pool for ${tokenA.code}/${tokenB.code}: ${pool.id}`);
+          
+          // Cache this result
+          if (useCache) {
+            try {
+              const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
+              await PoolCache.findOneAndUpdate(
+                { cacheKey: cacheKey1 },
+                {
+                  cacheKey: cacheKey1,
+                  pools: [pool],
+                  lastFetched: new Date(),
+                  expiresAt,
+                },
+                { upsert: true, new: true }
+              );
+            } catch (dbError) {
+              logger.warn(`Failed to cache pool existence check: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+            }
+          }
+          
+          return { exists: true, pool, poolId: pool.id };
+        }
+      }
+
+      logger.info(`ℹ️ No existing pool found for ${tokenA.code}/${tokenB.code}`);
+      return { exists: false };
+    } catch (err: any) {
+      logger.error(`❌ Error checking pool existence:`, err);
+      // Return null on error to allow creation to proceed (fail open)
+      return null;
+    }
+  }
+
   public async createLiquidityPool(
     userSecret: string,
     tokenA: { code: string; issuer: string },
@@ -76,6 +241,50 @@ export class PoolService {
 
       logger.info(`🔹 Creating liquidity pool for user: ${publicKey}`);
       logger.info(`🔹 Token A: ${tokenA.code}, Token B: ${tokenB.code}`);
+
+      // Check if pool already exists
+      const poolCheck = await this.checkPoolExists(tokenA, tokenB, true);
+      if (poolCheck && poolCheck.exists && poolCheck.poolId) {
+        const error = new Error(`Pool already exists for ${tokenA.code}/${tokenB.code}`);
+        (error as any).poolExists = true;
+        (error as any).poolId = poolCheck.poolId;
+        (error as any).existingPool = poolCheck.pool;
+        throw error;
+      }
+
+      // Validate user owns sufficient balance of both tokens
+      try {
+        const balances = await this.accountService.getBalances(publicKey, true);
+        const amountANum = parseFloat(amountA);
+        const amountBNum = parseFloat(amountB);
+
+        const tokenABalance = balances.balances.find((b: any) => {
+          if (tokenA.code === 'native') {
+            return b.assetType === 'native';
+          }
+          return b.assetCode === tokenA.code && b.assetIssuer === tokenA.issuer;
+        });
+
+        const tokenBBalance = balances.balances.find((b: any) => {
+          if (tokenB.code === 'native') {
+            return b.assetType === 'native';
+          }
+          return b.assetCode === tokenB.code && b.assetIssuer === tokenB.issuer;
+        });
+
+        if (!tokenABalance || tokenABalance.amount < amountANum) {
+          throw new Error(`Insufficient balance for ${tokenA.code}. Required: ${amountA}, Available: ${tokenABalance?.amount || 0}`);
+        }
+
+        if (!tokenBBalance || tokenBBalance.amount < amountBNum) {
+          throw new Error(`Insufficient balance for ${tokenB.code}. Required: ${amountB}, Available: ${tokenBBalance?.amount || 0}`);
+        }
+      } catch (balanceError: any) {
+        if (balanceError.message && balanceError.message.includes('Insufficient balance')) {
+          throw balanceError;
+        }
+        logger.warn(`⚠️ Could not validate balances, proceeding anyway: ${balanceError.message}`);
+      }
 
       await this.ensureTrustline(userSecret, tokenA.code, tokenA.issuer);
       await this.ensureTrustline(userSecret, tokenB.code, tokenB.issuer);
@@ -155,10 +364,44 @@ export class PoolService {
       logger.info(`🔹 Pool ID: ${poolId}`);
       logger.info(`🔹 TX hash: ${result.hash}`);
 
-      // Clear pool cache after creating a new pool
-      PoolCache.deleteMany({}).catch((err: any) => {
-        logger.warn(`Failed to clear pool cache after pool creation: ${err?.message || String(err)}`);
-      });
+      // Register pair in Pair model (if not already registered)
+      try {
+        const existingPair = await Pair.findOne({ poolId });
+        if (!existingPair) {
+          await Pair.create({
+            baseToken: tokenA.code,
+            quoteToken: tokenB.code,
+            poolId,
+            source: 'internal',
+            verified: false,
+          });
+          logger.success(`✅ Pair registered: ${tokenA.code}/${tokenB.code}`);
+        } else {
+          logger.info(`ℹ️ Pair already registered for pool ${poolId}`);
+        }
+      } catch (pairError: any) {
+        // Don't fail pool creation if pair registration fails
+        logger.warn(`⚠️ Failed to register pair after pool creation: ${pairError?.message || String(pairError)}`);
+      }
+
+      // Clear relevant cache entries
+      try {
+        const tokenACode = tokenA.code === 'native' ? 'native' : tokenA.code.toUpperCase();
+        const tokenBCode = tokenB.code === 'native' ? 'native' : tokenB.code.toUpperCase();
+        const cacheKey1 = `pair:${tokenACode}:${tokenBCode}`;
+        const cacheKey2 = `pair:${tokenBCode}:${tokenACode}`;
+        
+        await PoolCache.deleteMany({ 
+          $or: [
+            { cacheKey: 'all-pools' },
+            { cacheKey: cacheKey1 },
+            { cacheKey: cacheKey2 }
+          ]
+        });
+        logger.info(`✅ Cleared pool cache for pair ${tokenA.code}/${tokenB.code}`);
+      } catch (cacheError: any) {
+        logger.warn(`⚠️ Failed to clear pool cache after pool creation: ${cacheError?.message || String(cacheError)}`);
+      }
 
       return {
         poolId,
@@ -671,6 +914,69 @@ export class PoolService {
       return userPools;
     } catch (err: any) {
       logger.error(`❌ Error fetching user liquidity pools:`, err);
+      throw err;
+    }
+  }
+
+  public async getPlatformPools(useCache: boolean = true) {
+    try {
+      logger.info(`🔹 Fetching platform pools (pools created on this platform)`);
+
+      // Query Pair model for all registered pools
+      const pairs = await Pair.find().sort({ createdAt: -1 }).lean();
+      
+      if (pairs.length === 0) {
+        logger.info(`ℹ️ No platform pools found`);
+        return [];
+      }
+
+      logger.info(`🔹 Found ${pairs.length} registered pairs, fetching pool details...`);
+
+      const platformPools = [];
+      for (const pair of pairs) {
+        try {
+          // Try to get pool details from cache or Horizon
+          const pool = await this.getLiquidityPoolById(pair.poolId, useCache);
+          
+          if (pool && !this.isPoolEmpty(pool)) {
+            platformPools.push({
+              poolId: pair.poolId,
+              baseToken: pair.baseToken,
+              quoteToken: pair.quoteToken,
+              verified: pair.verified,
+              source: pair.source,
+              createdAt: pair.createdAt,
+              pool: {
+                id: pool.id,
+                reserves: pool.reserves,
+                total_shares: pool.total_shares,
+                fee_bp: pool.fee_bp,
+                last_modified_time: pool.last_modified_time,
+              },
+            });
+          } else {
+            logger.warn(`⚠️ Pool ${pair.poolId} is empty or not found, skipping`);
+          }
+        } catch (poolError: any) {
+          logger.warn(`⚠️ Unable to fetch pool details for ${pair.poolId}: ${poolError?.message || String(poolError)}`);
+          // Still include the pair info even if pool details can't be fetched
+          platformPools.push({
+            poolId: pair.poolId,
+            baseToken: pair.baseToken,
+            quoteToken: pair.quoteToken,
+            verified: pair.verified,
+            source: pair.source,
+            createdAt: pair.createdAt,
+            pool: null,
+            error: 'Pool details unavailable',
+          });
+        }
+      }
+
+      logger.success(`✅ Found ${platformPools.length} platform pools with details`);
+      return platformPools;
+    } catch (err: any) {
+      logger.error(`❌ Error fetching platform pools:`, err);
       throw err;
     }
   }
