@@ -59,11 +59,27 @@ export const createLiquidityPool = async (req: Request, res: Response) => {
       const operationError = error.operationError || error.resultCodes?.operations?.[0];
       const transactionError = error.resultCodes?.transaction;
       
+      // Provide helpful error message based on operation error
+      let userMessage = error.message || 'Transaction failed on Pi Network';
+      let suggestion = '';
+      
+      if (operationError === 'op_low_reserve') {
+        userMessage = 'Insufficient balance: Account does not have enough Test Pi to cover the minimum reserve requirement.';
+        suggestion = 'Each trustline and liquidity pool share requires a small reserve. Please ensure your account has enough Test Pi (native asset) to cover reserves.';
+      } else if (operationError === 'op_underfunded') {
+        userMessage = 'Insufficient balance: Account does not have enough funds to complete this transaction.';
+        suggestion = 'Please check your account balance and ensure you have sufficient funds for both tokens and transaction fees.';
+      } else if (operationError === 'op_line_full') {
+        userMessage = 'Trustline limit reached: Cannot add more liquidity because the trustline limit has been reached.';
+        suggestion = 'The trustline limit for this asset has been reached. You may need to increase the limit or use a different account.';
+      }
+      
       return res.status(400).json({
-        message: 'Transaction failed on Pi Network',
+        message: userMessage,
         reason: operationError || transactionError || error.message,
         operationError,
         transactionError,
+        suggestion,
         details: error.resultCodes,
       });
     }
@@ -94,7 +110,44 @@ export const depositToLiquidityPool = async (req: Request, res: Response) => {
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error('depositToLiquidityPool failed:', error);
-    const reason = typeof error === 'string' ? error : undefined;
+    logger.error('Error details:', {
+      message: error?.message,
+      operationError: error?.operationError,
+      resultCodes: error?.resultCodes,
+      response: error?.response?.data,
+    });
+    
+    // Handle transaction failed errors (e.g., op_low_reserve)
+    if (error.operationError || error.resultCodes) {
+      const operationError = error.operationError || error.resultCodes?.operations?.[0];
+      const transactionError = error.resultCodes?.transaction;
+      
+      // Provide helpful error message based on operation error
+      let userMessage = error.message || 'Transaction failed on Pi Network';
+      let suggestion = '';
+      
+      if (operationError === 'op_low_reserve') {
+        userMessage = 'Insufficient balance: Account does not have enough Test Pi to cover the minimum reserve requirement.';
+        suggestion = 'Each trustline and liquidity pool share requires a small reserve. Please ensure your account has enough Test Pi (native asset) to cover reserves.';
+      } else if (operationError === 'op_underfunded') {
+        userMessage = 'Insufficient balance: Account does not have enough funds to complete this transaction.';
+        suggestion = 'Please check your account balance and ensure you have sufficient funds for both tokens and transaction fees.';
+      } else if (operationError === 'op_line_full') {
+        userMessage = 'Trustline limit reached: Cannot add more liquidity because the trustline limit has been reached.';
+        suggestion = 'The trustline limit for this asset has been reached. You may need to increase the limit or use a different account.';
+      }
+      
+      return res.status(400).json({
+        message: userMessage,
+        reason: operationError || transactionError || error.message,
+        operationError,
+        transactionError,
+        suggestion,
+        details: error.resultCodes,
+      });
+    }
+    
+    const reason = typeof error === 'string' ? error : (error.message || undefined);
     return res.status(500).json({ message: 'Failed to deposit to liquidity pool', reason });
   }
 };
@@ -120,7 +173,44 @@ export const withdrawFromLiquidityPool = async (req: Request, res: Response) => 
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error('withdrawFromLiquidityPool failed:', error);
-    const reason = typeof error === 'string' ? error : undefined;
+    logger.error('Error details:', {
+      message: error?.message,
+      operationError: error?.operationError,
+      resultCodes: error?.resultCodes,
+      response: error?.response?.data,
+    });
+    
+    // Handle transaction failed errors (e.g., op_low_reserve)
+    if (error.operationError || error.resultCodes) {
+      const operationError = error.operationError || error.resultCodes?.operations?.[0];
+      const transactionError = error.resultCodes?.transaction;
+      
+      // Provide helpful error message based on operation error
+      let userMessage = error.message || 'Transaction failed on Pi Network';
+      let suggestion = '';
+      
+      if (operationError === 'op_low_reserve') {
+        userMessage = 'Insufficient balance: Account does not have enough Test Pi to cover the minimum reserve requirement.';
+        suggestion = 'Each trustline and liquidity pool share requires a small reserve. Please ensure your account has enough Test Pi (native asset) to cover reserves.';
+      } else if (operationError === 'op_underfunded') {
+        userMessage = 'Insufficient balance: Account does not have enough funds to complete this transaction.';
+        suggestion = 'Please check your account balance and ensure you have sufficient funds for transaction fees.';
+      } else if (operationError === 'op_line_full') {
+        userMessage = 'Trustline limit reached: Cannot withdraw liquidity because the trustline limit has been reached.';
+        suggestion = 'The trustline limit for this asset has been reached. You may need to increase the limit or use a different account.';
+      }
+      
+      return res.status(400).json({
+        message: userMessage,
+        reason: operationError || transactionError || error.message,
+        operationError,
+        transactionError,
+        suggestion,
+        details: error.resultCodes,
+      });
+    }
+    
+    const reason = typeof error === 'string' ? error : (error.message || undefined);
     return res.status(500).json({ message: 'Failed to withdraw from liquidity pool', reason });
   }
 };

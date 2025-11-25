@@ -434,15 +434,49 @@ export class PoolService {
       // Preserve the original error structure but ensure it's an Error object
       const error = err instanceof Error ? err : new Error(err?.message || String(err));
       
-      // Copy error properties
-      if (err?.response?.data) {
+      // Copy error properties including URL and method
+      if (err?.response) {
         (error as any).response = err.response;
+        (error as any).status = err.response?.status || err.status;
+        (error as any).statusText = err.response?.statusText || err.statusText;
+      }
+      
+      // Preserve URL and method from various possible locations
+      (error as any).url = err.config?.url || 
+                          err.request?.path || 
+                          err.url || 
+                          (err as any).requestUrl ||
+                          (err as any).request?.url ||
+                          (err.response?.config?.url) ||
+                          'unknown';
+      (error as any).method = err.config?.method || 
+                             err.method || 
+                             (err.response?.config?.method) ||
+                             'unknown';
+      
+      // Copy response data and result codes
+      if (err?.response?.data) {
+        (error as any).type = err.response.data.type;
+        (error as any).title = err.response.data.title;
+        (error as any).detail = err.response.data.detail;
+        
         if (err.response.data.extras?.result_codes) {
           (error as any).resultCodes = err.response.data.extras.result_codes;
           const operationError = err.response.data.extras.result_codes.operations?.[0];
           if (operationError) {
             (error as any).operationError = operationError;
-            error.message = `Transaction failed: ${operationError}`;
+            
+            // Provide user-friendly error messages for common errors
+            let userMessage = `Transaction failed: ${operationError}`;
+            if (operationError === 'op_low_reserve') {
+              userMessage = 'Insufficient balance: Account does not have enough Test Pi to cover the minimum reserve requirement. Each trustline and liquidity pool share requires a small reserve.';
+            } else if (operationError === 'op_underfunded') {
+              userMessage = 'Insufficient balance: Account does not have enough funds to complete this transaction.';
+            } else if (operationError === 'op_line_full') {
+              userMessage = 'Trustline limit reached: Cannot add more liquidity because the trustline limit has been reached.';
+            }
+            
+            error.message = userMessage;
           }
         }
       }
@@ -946,7 +980,57 @@ export class PoolService {
       return { hash: result.hash };
     } catch (err: any) {
       logger.error('❌ Error adding liquidity:', err);
-      throw err;
+      
+      // Preserve the original error structure but ensure it's an Error object
+      const error = err instanceof Error ? err : new Error(err?.message || String(err));
+      
+      // Copy error properties including URL and method
+      if (err?.response) {
+        (error as any).response = err.response;
+        (error as any).status = err.response?.status || err.status;
+        (error as any).statusText = err.response?.statusText || err.statusText;
+      }
+      
+      // Preserve URL and method from various possible locations
+      (error as any).url = err.config?.url || 
+                          err.request?.path || 
+                          err.url || 
+                          (err as any).requestUrl ||
+                          (err.response?.config?.url) ||
+                          'unknown';
+      (error as any).method = err.config?.method || 
+                             err.method || 
+                             (err.response?.config?.method) ||
+                             'unknown';
+      
+      // Copy response data and result codes
+      if (err?.response?.data) {
+        (error as any).type = err.response.data.type;
+        (error as any).title = err.response.data.title;
+        (error as any).detail = err.response.data.detail;
+        
+        if (err.response.data.extras?.result_codes) {
+          (error as any).resultCodes = err.response.data.extras.result_codes;
+          const operationError = err.response.data.extras.result_codes.operations?.[0];
+          if (operationError) {
+            (error as any).operationError = operationError;
+            
+            // Provide user-friendly error messages for common errors
+            let userMessage = `Transaction failed: ${operationError}`;
+            if (operationError === 'op_low_reserve') {
+              userMessage = 'Insufficient balance: Account does not have enough Test Pi to cover the minimum reserve requirement.';
+            } else if (operationError === 'op_underfunded') {
+              userMessage = 'Insufficient balance: Account does not have enough funds to complete this transaction.';
+            } else if (operationError === 'op_line_full') {
+              userMessage = 'Trustline limit reached: Cannot add more liquidity because the trustline limit has been reached.';
+            }
+            
+            error.message = userMessage;
+          }
+        }
+      }
+      
+      throw error;
     }
   }
 
@@ -991,7 +1075,57 @@ export class PoolService {
       return { hash: result.hash };
     } catch (err: any) {
       logger.error('❌ Error removing liquidity:', err);
-      throw err;
+      
+      // Preserve the original error structure but ensure it's an Error object
+      const error = err instanceof Error ? err : new Error(err?.message || String(err));
+      
+      // Copy error properties including URL and method
+      if (err?.response) {
+        (error as any).response = err.response;
+        (error as any).status = err.response?.status || err.status;
+        (error as any).statusText = err.response?.statusText || err.statusText;
+      }
+      
+      // Preserve URL and method from various possible locations
+      (error as any).url = err.config?.url || 
+                          err.request?.path || 
+                          err.url || 
+                          (err as any).requestUrl ||
+                          (err.response?.config?.url) ||
+                          'unknown';
+      (error as any).method = err.config?.method || 
+                             err.method || 
+                             (err.response?.config?.method) ||
+                             'unknown';
+      
+      // Copy response data and result codes
+      if (err?.response?.data) {
+        (error as any).type = err.response.data.type;
+        (error as any).title = err.response.data.title;
+        (error as any).detail = err.response.data.detail;
+        
+        if (err.response.data.extras?.result_codes) {
+          (error as any).resultCodes = err.response.data.extras.result_codes;
+          const operationError = err.response.data.extras.result_codes.operations?.[0];
+          if (operationError) {
+            (error as any).operationError = operationError;
+            
+            // Provide user-friendly error messages for common errors
+            let userMessage = `Transaction failed: ${operationError}`;
+            if (operationError === 'op_low_reserve') {
+              userMessage = 'Insufficient balance: Account does not have enough Test Pi to cover the minimum reserve requirement.';
+            } else if (operationError === 'op_underfunded') {
+              userMessage = 'Insufficient balance: Account does not have enough funds to complete this transaction.';
+            } else if (operationError === 'op_line_full') {
+              userMessage = 'Trustline limit reached: Cannot withdraw liquidity because the trustline limit has been reached.';
+            }
+            
+            error.message = userMessage;
+          }
+        }
+      }
+      
+      throw error;
     }
   }
 
