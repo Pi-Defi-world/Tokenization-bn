@@ -6,6 +6,13 @@ import { logger } from '../utils/logger';
 // Note: Stellar SDK Server constructor only accepts the Horizon URL
 export const server = new StellarSdk.Horizon.Server(env.HORIZON_URL);
 
+// Log server configuration at startup
+logger.info(`🔹 Pi Network Horizon Server configured: ${env.HORIZON_URL}`);
+if (!env.HORIZON_URL.includes('minepi.com')) {
+  logger.error(`⚠️ WARNING: HORIZON_URL does not appear to be Pi Network! Using: ${env.HORIZON_URL}`);
+  logger.error(`⚠️ Expected Pi Network URLs: https://api.testnet.minepi.com or https://api.mainnet.minepi.com`);
+}
+
 // Secondary server (fallback - Pi Network testnet, only if different from primary)
 const piTestnetUrl = env.horizon?.pi?.testnet || 'https://api.testnet.minepi.com';
 export const serverFallback = env.HORIZON_URL !== piTestnetUrl

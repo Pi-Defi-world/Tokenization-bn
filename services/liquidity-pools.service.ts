@@ -5,6 +5,7 @@ import { logger } from '../utils/logger';
 import PoolCache from '../models/PoolCache';
 import { Pair } from '../models/Pair';
 import { AccountService } from './account.service';
+import axios from 'axios';
 
 export class PoolService {
   private accountService: AccountService;
@@ -236,6 +237,13 @@ export class PoolService {
     amountB: string
   ) {
     try {
+      // Verify we're using Pi Horizon API
+      const serverUrl = (server as any).serverURL?.toString() || env.HORIZON_URL;
+      logger.info(`🔹 Using Pi Horizon API: ${serverUrl}`);
+      if (!serverUrl.includes('minepi.com')) {
+        logger.error(`⚠️ WARNING: Server URL does not appear to be Pi Horizon! Using: ${serverUrl}`);
+      }
+      
       const user = StellarSdk.Keypair.fromSecret(userSecret);
       const publicKey = user.publicKey();
 
@@ -413,8 +421,33 @@ export class PoolService {
       };
     } catch (err: any) {
       logger.error('❌ Error creating liquidity pool:');
-      logger.error(err.response?.data.extras.result_codes.operations[0]);
-      throw err.response?.data.extras.result_codes.operations[0];
+      logger.error(err);
+      
+      // Log detailed error information
+      if (err?.response?.data) {
+        logger.error('Error response data:', err.response.data);
+        if (err.response.data.extras?.result_codes) {
+          logger.error('Result codes:', err.response.data.extras.result_codes);
+        }
+      }
+      
+      // Preserve the original error structure but ensure it's an Error object
+      const error = err instanceof Error ? err : new Error(err?.message || String(err));
+      
+      // Copy error properties
+      if (err?.response?.data) {
+        (error as any).response = err.response;
+        if (err.response.data.extras?.result_codes) {
+          (error as any).resultCodes = err.response.data.extras.result_codes;
+          const operationError = err.response.data.extras.result_codes.operations?.[0];
+          if (operationError) {
+            (error as any).operationError = operationError;
+            error.message = `Transaction failed: ${operationError}`;
+          }
+        }
+      }
+      
+      throw error;
     }
   }
 
@@ -446,11 +479,26 @@ export class PoolService {
     }
 
     try {
+      // Log the server URL being used
+      const serverUrl = (server as any).serverURL?.toString() || env.HORIZON_URL;
+      logger.info(`🔹 Fetching liquidity pools from Pi Horizon: ${serverUrl}`);
+      
       // Validate limit is within acceptable range
       const validLimit = Math.min(Math.max(1, limit), 200); // Between 1 and 200
       if (validLimit !== limit) {
         logger.warn(`⚠️ Limit ${limit} adjusted to ${validLimit} (must be between 1 and 200)`);
       }
+      
+      // Build query parameters manually to log them
+      const queryParams: string[] = [`limit=${validLimit}`];
+      if (cursor && cursor.length > 0) {
+        const isHexHash = /^[0-9a-f]{64}$/i.test(cursor);
+        if (!isHexHash) {
+          queryParams.push(`cursor=${encodeURIComponent(cursor)}`);
+        }
+      }
+      const expectedUrl = `${serverUrl}/liquidity_pools?${queryParams.join('&')}`;
+      logger.info(`🔹 Expected request URL: ${expectedUrl}`);
       
       let builder = server.liquidityPools().limit(validLimit);
       
@@ -471,7 +519,40 @@ export class PoolService {
         logger.info(`🔹 Fetching first page of liquidity pools (limit: ${validLimit})`);
       }
 
-      const pools = await builder.call();
+      let pools;
+      try {
+        pools = await builder.call();
+      } catch (sdkError: any) {
+        // If SDK fails, try direct HTTP request as fallback
+        logger.warn(`⚠️ SDK call failed, trying direct HTTP request...`);
+        logger.error(`SDK Error:`, {
+          message: sdkError?.message,
+          status: sdkError?.response?.status,
+          data: sdkError?.response?.data,
+          url: sdkError?.config?.url || sdkError?.request?.path || (sdkError as any).requestUrl,
+        });
+        
+        // Fallback to direct HTTP request
+        try {
+          const response = await axios.get(expectedUrl, {
+            timeout: 10000,
+            validateStatus: (status: number) => status < 500,
+          });
+          
+          if (response.status === 200) {
+            logger.info(`✅ Direct HTTP request succeeded, using response`);
+            pools = {
+              records: response.data._embedded?.records || [],
+              paging_token: response.data._links?.next?.href ? response.data._links.next.href.split('cursor=')[1]?.split('&')[0] : undefined,
+            };
+          } else {
+            throw sdkError; // Re-throw SDK error if HTTP also fails
+          }
+        } catch (httpError: any) {
+          logger.error(`❌ Direct HTTP fallback also failed:`, httpError?.response?.data || httpError?.message);
+          throw sdkError; // Re-throw original SDK error
+        }
+      }
 
       logger.info(`🔹 Fetched ${pools.records.length} liquidity pools`);
       pools.records.forEach((pool: any, i: number) => {
@@ -567,19 +648,80 @@ export class PoolService {
       
       logger.error('❌ Error fetching liquidity pools:', err);
       
+      // Log the server URL to verify we're using Pi Horizon
+      const serverUrl = (server as any).serverURL?.toString() || env.HORIZON_URL;
+      logger.error(`Server URL used: ${serverUrl}`);
+      
+      // Try to reconstruct the request URL that was made
+      const queryParams: string[] = [`limit=${limit}`];
+      if (cursor && cursor.length > 0) {
+        const isHexHash = /^[0-9a-f]{64}$/i.test(cursor);
+        if (!isHexHash) {
+          queryParams.push(`cursor=${encodeURIComponent(cursor)}`);
+        }
+      }
+      const reconstructedUrl = `${serverUrl}/liquidity_pools?${queryParams.join('&')}`;
+      logger.error(`Reconstructed request URL: ${reconstructedUrl}`);
+      
       // Log detailed error information for Bad Request errors
-      if (err?.response?.status === 400) {
-        logger.error('Bad Request details:', {
-          status: err.response.status,
-          data: err.response.data,
-          extras: err.response.data?.extras,
-          invalid_field: err.response.data?.extras?.invalid_field,
-          reason: err.response.data?.extras?.reason,
-          url: err.config?.url || 'unknown',
-          method: err.config?.method || 'unknown',
+      if (err?.response?.status === 400 || err?.status === 400) {
+        const errorDetails: any = {
+          status: err.response?.status || err.status || 400,
           cursor: cursor,
           limit: limit,
-        });
+          serverUrl: serverUrl,
+          reconstructedUrl: reconstructedUrl,
+        };
+        
+        // Try to extract URL and method from various possible locations
+        errorDetails.url = err.config?.url || 
+                         err.request?.path || 
+                         err.url || 
+                         (err as any).requestUrl || 
+                         (err as any).request?.url ||
+                         reconstructedUrl;
+        errorDetails.method = err.config?.method || err.method || 'GET';
+        
+        // Extract full error response
+        if (err.response?.data) {
+          errorDetails.data = err.response.data;
+          errorDetails.extras = err.response.data?.extras;
+          errorDetails.invalid_field = err.response.data?.extras?.invalid_field;
+          errorDetails.reason = err.response.data?.extras?.reason || 
+                               err.response.data?.detail || 
+                               err.response.data?.message || 
+                               err.response.data?.title;
+          errorDetails.type = err.response.data?.type;
+        } else if (err.message) {
+          errorDetails.message = err.message;
+        }
+        
+        // Check if error has request information in different formats
+        if ((err as any).request) {
+          errorDetails.requestUrl = (err as any).request?.path || (err as any).request?.url;
+        }
+        
+        // Try to get URL from SDK's internal state
+        if ((err as any).requestUrl === undefined && (server as any).serverURL) {
+          errorDetails.sdkServerUrl = (server as any).serverURL.toString();
+        }
+        
+        logger.error('Bad Request details:', JSON.stringify(errorDetails, null, 2));
+        
+        // Verify we're using Pi Horizon, not Stellar
+        if (!serverUrl.includes('minepi.com')) {
+          logger.error(`⚠️ WARNING: Server URL does not appear to be Pi Horizon! Using: ${serverUrl}`);
+        }
+        
+        // If it's a bad request with invalid parameters, provide a helpful error message
+        if (errorDetails.invalid_field || errorDetails.reason) {
+          const helpfulError = new Error(
+            `Invalid request to Pi Horizon API: ${errorDetails.reason || errorDetails.invalid_field || 'Bad Request'}`
+          );
+          (helpfulError as any).status = 400;
+          (helpfulError as any).details = errorDetails;
+          throw helpfulError;
+        }
       }
       
       throw err;

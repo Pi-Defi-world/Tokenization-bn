@@ -28,6 +28,12 @@ export const createLiquidityPool = async (req: Request, res: Response) => {
     return res.status(201).json(result);
   } catch (error: any) {
     logger.error('createLiquidityPool failed:', error);
+    logger.error('Error details:', {
+      message: error?.message,
+      operationError: error?.operationError,
+      resultCodes: error?.resultCodes,
+      response: error?.response?.data,
+    });
     
     // Handle pool exists error
     if (error.poolExists && error.poolId) {
@@ -45,6 +51,20 @@ export const createLiquidityPool = async (req: Request, res: Response) => {
       return res.status(400).json({
         message: error.message,
         reason: error.message,
+      });
+    }
+
+    // Handle transaction failed errors (e.g., op_low_reserve)
+    if (error.operationError || error.resultCodes) {
+      const operationError = error.operationError || error.resultCodes?.operations?.[0];
+      const transactionError = error.resultCodes?.transaction;
+      
+      return res.status(400).json({
+        message: 'Transaction failed on Pi Network',
+        reason: operationError || transactionError || error.message,
+        operationError,
+        transactionError,
+        details: error.resultCodes,
       });
     }
 
