@@ -208,15 +208,10 @@ export class PoolService {
       let builder = server.liquidityPools().limit(validLimit);
       
       if (cursor && cursor.length > 0) {
-        // Validate cursor format - must not be a hex hash (pool ID)
-        // Paging tokens are base64 encoded strings, not hex hashes
         const isHexHash = /^[0-9a-f]{64}$/i.test(cursor);
         if (isHexHash) {
           logger.warn(`⚠️ Cursor looks like a hex hash (pool ID?), skipping cursor. Use paging_token instead.`);
-          // Don't set cursor if it looks like a pool ID
         } else {
-          // Additional validation: cursor should be base64-like (contains A-Z, a-z, 0-9, +, /, =)
-          // But we'll be lenient and just check it's not obviously wrong
           try {
             builder = builder.cursor(cursor);
             logger.info(`🔹 Using cursor for pagination: ${cursor.substring(0, 20)}...`);

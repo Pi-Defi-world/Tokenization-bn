@@ -598,6 +598,26 @@ export class AccountService {
             destination: op.into,
           };
 
+        case 'path_payment_strict_send':
+        case 'path_payment_strict_receive':
+          return {
+            ...base,
+            action: 'swap',
+            from: op.from || op.source_account,
+            to: op.to || op.destination,
+            amount: op.source_amount || op.amount,
+            asset:
+              op.source_asset_type === 'native'
+                ? 'Test Pi'
+                : `${op.source_asset_code}:${op.source_asset_issuer}`,
+            // Also include destination asset info
+            destinationAsset:
+              op.destination_asset_type === 'native'
+                ? 'Test Pi'
+                : `${op.destination_asset_code}:${op.destination_asset_issuer}`,
+            destinationAmount: op.destination_amount || op.amount_min,
+          };
+
         default:
           return { ...base, action: `unknown (${op.type})`, details: op };
       }

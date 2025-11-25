@@ -378,6 +378,10 @@ class SwapService {
               if (retries < maxRetries - 1) {
                 retries++;
                 continue;
+              } else {
+                // If sequence hasn't updated after all retries, the trustline might not have been submitted
+                // But we'll proceed anyway and let the balance check catch any issues
+                logger.warn(`⚠️ Sequence number still not updated after all retries, but proceeding with balance check`);
               }
             }
           }
@@ -414,6 +418,12 @@ class SwapService {
                 const sequenceStr = String(httpSequence);
                 finalAccount = new StellarSdk.Account(publicKey, sequenceStr);
                 
+                // Attach balances from HTTP response for balance validation
+                if (accountData.balances && Array.isArray(accountData.balances)) {
+                  (finalAccount as any).balances = accountData.balances;
+                  logger.info(`Attached ${accountData.balances.length} balances to Account object from HTTP fallback`);
+                }
+                
                 // Log the account object details for debugging
                 logger.info(`Created Account object from HTTP fallback: sequence=${sequenceStr}, publicKey=${publicKey}`);
                 break;
@@ -439,6 +449,87 @@ class SwapService {
       
       const finalSequence = finalAccount.sequenceNumber();
       logger.info(`🔹 Final account sequence for transaction: ${finalSequence}`);
+      
+      // CRITICAL: Re-validate balance AFTER trustline creation and account reload
+      // The trustline transaction costs a fee, so the balance may have changed
+      logger.info(`🔹 Re-validating balance after trustline creation...`);
+      
+      // Get latest balances from the reloaded account
+      let latestBalances: any[] = [];
+      if (finalAccount.balances && Array.isArray(finalAccount.balances)) {
+        latestBalances = finalAccount.balances;
+      } else {
+        // If balances not in account object, fetch them via HTTP
+        try {
+          const horizonUrl = env.HORIZON_URL;
+          const accountUrl = `${horizonUrl}/accounts/${publicKey}`;
+          const response = await axios.get(accountUrl, { timeout: 10000 });
+          if (response.status === 200 && response.data && response.data.balances) {
+            latestBalances = response.data.balances;
+            logger.info(`Fetched latest balances via HTTP for validation`);
+          }
+        } catch (balanceError) {
+          logger.warn(`Failed to fetch latest balances for validation: ${balanceError instanceof Error ? balanceError.message : String(balanceError)}`);
+        }
+      }
+      
+      // Re-validate balance with latest data
+      if (fromCode === 'native') {
+        const nativeBalance = latestBalances.find((b: any) => b.asset_type === 'native');
+        if (nativeBalance) {
+          const availableBalance = parseFloat(nativeBalance.balance);
+          const baseFee = await server.fetchBaseFee();
+          const feeInPi = baseFee / 10000000; // Convert stroops to Test Pi
+          const minReserve = 1.0; // Minimum reserve requirement
+          const totalRequired = input + feeInPi + minReserve;
+          
+          logger.info(`💰 Post-trustline balance check: Available: ${availableBalance.toFixed(7)} Test Pi, Required: ${totalRequired.toFixed(7)} Test Pi (amount: ${input.toFixed(7)} + fee: ${feeInPi.toFixed(7)} + reserve: ${minReserve.toFixed(7)})`);
+          
+          if (availableBalance < totalRequired) {
+            const errorMsg = `Insufficient balance after trustline creation. Available: ${availableBalance.toFixed(7)} Test Pi, Required: ${totalRequired.toFixed(7)} Test Pi (including transaction fee and reserve).`;
+            logger.error(`❌ ${errorMsg}`);
+            throw new Error(errorMsg);
+          }
+        } else {
+          throw new Error(`No Test Pi balance found after trustline creation.`);
+        }
+      } else {
+        // For non-native assets
+        const actualFromCodeUpper = actualFromCode.toUpperCase();
+        const assetBalance = latestBalances.find(
+          (b: any) => b.asset_code && b.asset_code.toUpperCase() === actualFromCodeUpper && b.asset_issuer === actualFromIssuer
+        );
+        if (assetBalance) {
+          const availableBalance = parseFloat(assetBalance.balance);
+          const baseFee = await server.fetchBaseFee();
+          const feeInPi = baseFee / 10000000;
+          
+          logger.info(`💰 Post-trustline balance check: Available: ${availableBalance.toFixed(7)} ${actualFromCode}, Required: ${input.toFixed(7)} ${actualFromCode} + fee: ${feeInPi.toFixed(7)} Test Pi`);
+          
+          if (availableBalance < input) {
+            const errorMsg = `Insufficient ${actualFromCode} balance after trustline creation. Available: ${availableBalance.toFixed(7)}, Required: ${input.toFixed(7)}.`;
+            logger.error(`❌ ${errorMsg}`);
+            throw new Error(errorMsg);
+          }
+          
+          // Also check native balance for fees
+          const nativeBalance = latestBalances.find((b: any) => b.asset_type === 'native');
+          if (nativeBalance) {
+            const nativeBal = parseFloat(nativeBalance.balance);
+            if (nativeBal < feeInPi) {
+              const errorMsg = `Insufficient Test Pi for transaction fee. Available: ${nativeBal.toFixed(7)} Test Pi, Required: ${feeInPi.toFixed(7)} Test Pi.`;
+              logger.error(`❌ ${errorMsg}`);
+              throw new Error(errorMsg);
+            }
+          } else {
+            throw new Error(`No Test Pi balance found for transaction fees.`);
+          }
+        } else {
+          throw new Error(`No ${actualFromCode} balance found after trustline creation.`);
+        }
+      }
+      
+      logger.info(`✅ Balance validation passed after trustline creation`);
       
       // For AMM swaps through liquidity pools, use empty path
       // The network will automatically route through available liquidity pools
