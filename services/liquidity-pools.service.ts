@@ -255,6 +255,10 @@ export class PoolService {
       // Validate user owns sufficient balance of both tokens
       try {
         const balances = await this.accountService.getBalances(publicKey, true);
+        if (!balances || !balances.balances) {
+          throw new Error('Failed to fetch account balances');
+        }
+
         const amountANum = parseFloat(amountA);
         const amountBNum = parseFloat(amountB);
 

@@ -195,8 +195,12 @@ export const getUserTokens = async (req: Request, res: Response) => {
     const useCache = req.query.cache !== 'false';
     const result = await accountService.getBalances(publicKey, useCache);
 
+    if (!result) {
+      return res.status(500).json({ message: 'Failed to fetch balances' });
+    }
+
     // Filter out liquidity pool shares and return only owned tokens
-    const tokens = result.balances
+    const tokens = (result.balances || [])
       .filter((balance: any) => {
         // Exclude liquidity pool shares
         return balance.assetType !== 'liquidity_pool_shares';
@@ -214,7 +218,7 @@ export const getUserTokens = async (req: Request, res: Response) => {
     return res.status(200).json({
       publicKey,
       tokens,
-      cached: result.cached,
+      cached: result.cached || false,
     });
   } catch (error: any) {
     logger.error('getUserTokens failed:', error);
