@@ -223,8 +223,8 @@ class SwapService {
     slippagePercent: number = 1
   ) {
     const start = Date.now();
-    const user = StellarSdk.Keypair.fromSecret(userSecret);
-    const publicKey = user.publicKey();
+      const user = StellarSdk.Keypair.fromSecret(userSecret);
+      const publicKey = user.publicKey();
 
     // Ensure from and to are strings
     const fromStr = typeof from === 'string' ? from : String(from);
@@ -269,7 +269,7 @@ class SwapService {
       const [actualToCode, actualToIssuer] = actualToAsset === "native" 
         ? ["native", undefined] 
         : actualToAsset.split(':');
-      
+
       const fromAsset =
         actualFromCode === 'native' ? StellarSdk.Asset.native() : getAsset(actualFromCode, actualFromIssuer);
       const toAsset =
@@ -379,8 +379,6 @@ class SwapService {
                 retries++;
                 continue;
               } else {
-                // If sequence hasn't updated after all retries, the trustline might not have been submitted
-                // But we'll proceed anyway and let the balance check catch any issues
                 logger.warn(`⚠️ Sequence number still not updated after all retries, but proceeding with balance check`);
               }
             }
@@ -391,7 +389,6 @@ class SwapService {
           retries++;
           
           if (retries >= maxRetries) {
-            // If SDK still fails after retries, try HTTP fallback as last resort
             logger.warn(`SDK failed after ${maxRetries} retries, trying HTTP fallback as last resort...`);
             try {
               const horizonUrl = env.HORIZON_URL;
@@ -412,13 +409,8 @@ class SwapService {
                     throw new Error(`Account sequence not updated after trustline creation. Please wait a few seconds and try again.`);
                   }
                 }
-                
-                // Create proper SDK Account object with correct sequence
-                // Ensure sequence is a string (Stellar SDK expects string)
                 const sequenceStr = String(httpSequence);
                 finalAccount = new StellarSdk.Account(publicKey, sequenceStr);
-                
-                // Attach balances from HTTP response for balance validation
                 if (accountData.balances && Array.isArray(accountData.balances)) {
                   (finalAccount as any).balances = accountData.balances;
                   logger.info(`Attached ${accountData.balances.length} balances to Account object from HTTP fallback`);
@@ -541,21 +533,21 @@ class SwapService {
       let tx;
       try {
         tx = new StellarSdk.TransactionBuilder(finalAccount, {
-          fee: baseFee.toString(),
-          networkPassphrase: env.NETWORK,
-        })
-          .addOperation(
-            StellarSdk.Operation.pathPaymentStrictSend({
-              sendAsset: fromAsset,
-              sendAmount,
-              destination: publicKey,
-              destAsset: toAsset,
-              destMin: minDestAmount,
+        fee: baseFee.toString(),
+        networkPassphrase: env.NETWORK,
+      })
+        .addOperation(
+          StellarSdk.Operation.pathPaymentStrictSend({
+            sendAsset: fromAsset,
+            sendAmount,
+            destination: publicKey,
+            destAsset: toAsset,
+            destMin: minDestAmount,
               path: path,
-            })
-          )
-          .setTimeout(60)
-          .build();
+          })
+        )
+        .setTimeout(60)
+        .build();
         
         logger.info(`✅ Transaction built successfully`);
       } catch (buildError: any) {
@@ -792,9 +784,9 @@ class SwapService {
         try {
           const result = await poolService.getLiquidityPools(limit, cursor, useCache);
           consecutiveErrors = 0; // Reset error counter on success
-          totalFetched += result.records.length;
+        totalFetched += result.records.length;
 
-          for (const pool of result.records) {
+        for (const pool of result.records) {
             // Skip empty pools
             if (this.isPoolEmpty(pool)) {
               continue;
@@ -809,11 +801,11 @@ class SwapService {
             const tokenBUpper = tokenB === "native" ? "native" : tokenB.toUpperCase();
             const assetsUpper = assets.map((a: string) => a === "native" ? "native" : a.toUpperCase());
             if (assetsUpper.includes(tokenAUpper) && assetsUpper.includes(tokenBUpper)) {
-              matchedPools.push(pool);
-            }
+            matchedPools.push(pool);
           }
+        }
 
-          logger.info(`📦 Fetched ${totalFetched} pools so far... (${matchedPools.length} matches)`);
+        logger.info(`📦 Fetched ${totalFetched} pools so far... (${matchedPools.length} matches)`);
 
           // Validate nextCursor before using it - must be a valid paging token, not a pool ID
           const nextCursor = result.nextCursor;
@@ -933,7 +925,7 @@ class SwapService {
       }
 
       // Final check: return any matched pools even if pagination had errors
-      if (matchedPools.length > 0) {
+        if (matchedPools.length > 0) {
         const nonEmptyMatchedPools = matchedPools.filter((pool: any) => !this.isPoolEmpty(pool));
         if (nonEmptyMatchedPools.length > 0) {
           logger.success(`✅ Found ${nonEmptyMatchedPools.length} pools containing ${tokenA}/${tokenB} (despite errors)`);
