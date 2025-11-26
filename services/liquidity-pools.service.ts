@@ -88,7 +88,26 @@ export class PoolService {
         .build();
 
       tx.sign(user);
-      const res = await server.submitTransaction(tx);
+      
+      // Submit transaction using direct HTTP (workaround for SDK URL construction bug)
+      const txXdr = tx.toXDR();
+      const submitUrl = `${env.HORIZON_URL}/transactions`;
+      
+      const response = await axios.post(submitUrl, `tx=${encodeURIComponent(txXdr)}`, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        timeout: 30000,
+      });
+      
+      const res = {
+        hash: response.data.hash,
+        ledger: response.data.ledger,
+        envelope_xdr: response.data.envelope_xdr,
+        result_xdr: response.data.result_xdr,
+        result_meta_xdr: response.data.result_meta_xdr,
+      };
+      
       logger.success(`✅ Trustline established for ${assetCode}`);
       logger.info(`🔹 TX hash: ${res.hash}`);
     } catch (err: any) {
@@ -344,9 +363,44 @@ export class PoolService {
         .build();
 
       trustTx.sign(user);
-      const trustRes = await server.submitTransaction(trustTx);
-      logger.success(`✅ Trustline established for pool share asset`);
-      logger.info(`🔹 Trustline TX hash: ${trustRes.hash}`);
+      
+      // Submit trustline transaction using direct HTTP (workaround for SDK URL construction bug)
+      let trustRes;
+      try {
+        const trustTxXdr = trustTx.toXDR();
+        const submitUrl = `${env.HORIZON_URL}/transactions`;
+        
+        logger.info(`🔹 Submitting trustline transaction via direct HTTP: ${submitUrl}`);
+        const response = await axios.post(submitUrl, `tx=${encodeURIComponent(trustTxXdr)}`, {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          timeout: 30000,
+        });
+        
+        trustRes = {
+          hash: response.data.hash,
+          ledger: response.data.ledger,
+          envelope_xdr: response.data.envelope_xdr,
+          result_xdr: response.data.result_xdr,
+          result_meta_xdr: response.data.result_meta_xdr,
+        };
+        
+        logger.success(`✅ Trustline established for pool share asset`);
+        logger.info(`🔹 Trustline TX hash: ${trustRes.hash}`);
+      } catch (submitError: any) {
+        logger.error(`❌ Trustline transaction submission failed`);
+        if (submitError.response?.data) {
+          const errorData = submitError.response.data;
+          if (errorData.extras?.result_codes) {
+            logger.error(`Result codes:`, errorData.extras.result_codes);
+          }
+          logger.error(`Error:`, submitError);
+        } else {
+          logger.error(`Error: ${submitError.message}`);
+        }
+        throw submitError;
+      }
 
       const exactPrice = parseFloat(amountA) / parseFloat(amountB);
       const minPrice = (exactPrice * 0.9).toFixed(7);
@@ -371,11 +425,46 @@ export class PoolService {
         .build();
 
       tx.sign(user);
-      const result = await server.submitTransaction(tx);
-
-      logger.success(`🚀 Liquidity pool created and liquidity added successfully!`);
-      logger.info(`🔹 Pool ID: ${poolId}`);
-      logger.info(`🔹 TX hash: ${result.hash}`);
+      
+      // Submit transaction using direct HTTP (workaround for SDK URL construction bug)
+      // The SDK sometimes constructs incorrect URLs (e.g., /transactions/transactions)
+      let result;
+      try {
+        const txXdr = tx.toXDR();
+        const submitUrl = `${env.HORIZON_URL}/transactions`;
+        
+        logger.info(`🔹 Submitting deposit transaction via direct HTTP: ${submitUrl}`);
+        const response = await axios.post(submitUrl, `tx=${encodeURIComponent(txXdr)}`, {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          timeout: 30000,
+        });
+        
+        result = {
+          hash: response.data.hash,
+          ledger: response.data.ledger,
+          envelope_xdr: response.data.envelope_xdr,
+          result_xdr: response.data.result_xdr,
+          result_meta_xdr: response.data.result_meta_xdr,
+        };
+        
+        logger.success(`🚀 Liquidity pool created and liquidity added successfully!`);
+        logger.info(`🔹 Pool ID: ${poolId}`);
+        logger.info(`🔹 TX hash: ${result.hash}`);
+      } catch (submitError: any) {
+        logger.error(`❌ Transaction submission failed`);
+        if (submitError.response?.data) {
+          const errorData = submitError.response.data;
+          if (errorData.extras?.result_codes) {
+            logger.error(`Result codes:`, errorData.extras.result_codes);
+          }
+          logger.error(`Error:`, submitError);
+        } else {
+          logger.error(`Error: ${submitError.message}`);
+        }
+        throw submitError;
+      }
 
       // Register pair in Pair model (if not already registered)
       try {
@@ -992,7 +1081,26 @@ export class PoolService {
         .build();
 
       tx.sign(user);
-      const result = await server.submitTransaction(tx);
+      
+      // Submit transaction using direct HTTP (workaround for SDK URL construction bug)
+      const txXdr = tx.toXDR();
+      const submitUrl = `${env.HORIZON_URL}/transactions`;
+      
+      const response = await axios.post(submitUrl, `tx=${encodeURIComponent(txXdr)}`, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        timeout: 30000,
+      });
+      
+      const result = {
+        hash: response.data.hash,
+        ledger: response.data.ledger,
+        envelope_xdr: response.data.envelope_xdr,
+        result_xdr: response.data.result_xdr,
+        result_meta_xdr: response.data.result_meta_xdr,
+      };
+      
       logger.success(`✅ Added liquidity successfully`);
       
       PoolCache.deleteMany({}).catch((err: any) => {
@@ -1087,7 +1195,26 @@ export class PoolService {
         .build();
 
       tx.sign(user);
-      const result = await server.submitTransaction(tx);
+      
+      // Submit transaction using direct HTTP (workaround for SDK URL construction bug)
+      const txXdr = tx.toXDR();
+      const submitUrl = `${env.HORIZON_URL}/transactions`;
+      
+      const response = await axios.post(submitUrl, `tx=${encodeURIComponent(txXdr)}`, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        timeout: 30000,
+      });
+      
+      const result = {
+        hash: response.data.hash,
+        ledger: response.data.ledger,
+        envelope_xdr: response.data.envelope_xdr,
+        result_xdr: response.data.result_xdr,
+        result_meta_xdr: response.data.result_meta_xdr,
+      };
+      
       logger.success(`💧 Liquidity withdrawn successfully`);
       
       PoolCache.deleteMany({}).catch((err: any) => {
