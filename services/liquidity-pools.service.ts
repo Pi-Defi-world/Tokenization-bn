@@ -6,6 +6,7 @@ import PoolCache from '../models/PoolCache';
 import { Pair } from '../models/Pair';
 import { AccountService } from './account.service';
 import axios from 'axios';
+import { horizonQueue } from '../utils/horizon-queue';
 
 export class PoolService {
   private accountService: AccountService;
@@ -532,6 +533,7 @@ export class PoolService {
         }
       }
       const expectedUrl = `${serverUrl}/liquidity_pools?${queryParams.join('&')}`;
+      const apiPath = `/liquidity_pools?${queryParams.join('&')}`;
       logger.info(`🔹 Expected request URL: ${expectedUrl}`);
       
       let builder = server.liquidityPools().limit(validLimit);
@@ -554,37 +556,57 @@ export class PoolService {
       }
 
       let pools;
+      // Use direct HTTP request first to avoid SDK URL construction issues
+      // The SDK sometimes constructs incorrect URLs (e.g., /transactions/liquidity_pools)
       try {
-        pools = await builder.call();
-      } catch (sdkError: any) {
-        // If SDK fails, try direct HTTP request as fallback
-        logger.warn(`⚠️ SDK call failed, trying direct HTTP request...`);
-        logger.error(`SDK Error:`, {
-          message: sdkError?.message,
-          status: sdkError?.response?.status,
-          data: sdkError?.response?.data,
-          url: sdkError?.config?.url || sdkError?.request?.path || (sdkError as any).requestUrl,
-        });
+        logger.info(`🔹 Using direct HTTP request for liquidity pools (more reliable than SDK)`);
+        const response = await horizonQueue.get<any>(apiPath, {
+          timeout: 10000,
+          validateStatus: (status: number) => status < 500,
+        }, 1);
         
-        // Fallback to direct HTTP request
-        try {
-          const response = await axios.get(expectedUrl, {
-            timeout: 10000,
-            validateStatus: (status: number) => status < 500,
-          });
-          
-          if (response.status === 200) {
-            logger.info(`✅ Direct HTTP request succeeded, using response`);
+        if (response && typeof response === 'object' && 'status' in response) {
+          const httpResponse = response as { status: number; data?: any };
+          if (httpResponse.status === 200 && httpResponse.data) {
+            logger.info(`✅ Direct HTTP request succeeded`);
             pools = {
-              records: response.data._embedded?.records || [],
-              paging_token: response.data._links?.next?.href ? response.data._links.next.href.split('cursor=')[1]?.split('&')[0] : undefined,
+              records: httpResponse.data._embedded?.records || [],
+              paging_token: httpResponse.data._links?.next?.href ? 
+                httpResponse.data._links.next.href.split('cursor=')[1]?.split('&')[0] : 
+                undefined,
             };
           } else {
-            throw sdkError; // Re-throw SDK error if HTTP also fails
+            throw new Error(`HTTP request returned status ${httpResponse.status}`);
           }
-        } catch (httpError: any) {
-          logger.error(`❌ Direct HTTP fallback also failed:`, httpError?.response?.data || httpError?.message);
-          throw sdkError; // Re-throw original SDK error
+        } else {
+          throw new Error('Invalid HTTP response format');
+        }
+      } catch (httpError: any) {
+        // If direct HTTP fails, try SDK as fallback
+        logger.warn(`⚠️ Direct HTTP request failed, trying SDK as fallback...`);
+        if (httpError) {
+          logger.error(`HTTP Error: ${httpError?.message || String(httpError)}`, httpError);
+        }
+        
+        try {
+          pools = await builder.call();
+          logger.info(`✅ SDK fallback succeeded`);
+        } catch (sdkError: any) {
+          logger.error(`❌ Both direct HTTP and SDK failed`);
+          logger.error(`SDK Error:`, {
+            message: sdkError?.message,
+            status: sdkError?.response?.status,
+            data: sdkError?.response?.data,
+            url: sdkError?.config?.url || sdkError?.request?.path || (sdkError as any).requestUrl,
+          });
+          
+          // If both fail, prefer HTTP error details but include SDK error info
+          const combinedError = new Error(
+            `Failed to fetch liquidity pools: ${httpError?.message || 'Unknown error'}`
+          );
+          (combinedError as any).httpError = httpError;
+          (combinedError as any).sdkError = sdkError;
+          throw combinedError;
         }
       }
 

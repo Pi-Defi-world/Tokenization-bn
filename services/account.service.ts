@@ -219,6 +219,13 @@ export class AccountService {
               }
             }
           } else if (isNotFoundError) {
+            // If SDK returns 404 but direct HTTP confirmed account exists, skip retries and use HTTP data
+            if (directHttpTest?.exists === true && directHttpTest?.accountData) {
+              logger.warn(`⚠️ SDK returned 404 but direct HTTP confirmed account exists - will use HTTP data as fallback`);
+              // Break out of retry loop to trigger HTTP fallback in outer handler
+              break;
+            }
+            
             retryCount++;
             if (retryCount < MAX_RETRIES_PER_SERVER) {
               continue;
