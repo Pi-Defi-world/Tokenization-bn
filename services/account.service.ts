@@ -94,7 +94,6 @@ export class AccountService {
       const shouldRetryNotFound = isNotFoundCache && cacheAge > 10000; 
       
       if (!isExpired && !isNotFoundCache && !shouldRetryNotFound) {
-        logger.info(`Using cached balances for account ${publicKey} (from DB, expires: ${existingCachedBalances.expiresAt.toISOString()}, exists: ${existingCachedBalances.accountExists})`);
         return { 
           publicKey, 
           balances: existingCachedBalances.balances,
@@ -104,36 +103,30 @@ export class AccountService {
       }
       
       if (isNotFoundCache && shouldRetryNotFound) {
-        logger.info(`Retrying fetch for account ${publicKey} - previous "not found" cache is ${Math.round(cacheAge / 1000)}s old (account may exist now)`);
       }
     }
-    let directHttpTest: { exists: boolean; accountData?: any; error?: any } | null = null;
+    // Use direct HTTP as primary method (more reliable than SDK)
+    let directHttpAccount: { exists: boolean; accountData?: any; error?: any } | null = null;
     try {
-      const horizonUrl = env.HORIZON_URL;
-      const testUrl = `${horizonUrl}/accounts/${publicKey}`;
-      logger.info(`🔍 Testing account existence via direct HTTP: ${testUrl}`);
+      const accountPath = `/accounts/${publicKey}`;
       
       // Use horizon queue for rate-limited requests
-      const response = await horizonQueue.get<any>(testUrl, {
+      const response = await horizonQueue.get<any>(accountPath, {
         timeout: 10000,
         validateStatus: (status: number) => status < 500  
       }, 1); // High priority for account existence checks
       
       if (response && typeof response === 'object' && 'status' in response) {
         const httpResponse = response as { status: number; data?: any };
-        if (httpResponse.status === 200) {
-          directHttpTest = { exists: true, accountData: httpResponse.data };
-          logger.info(`✅ Direct HTTP test confirms account ${publicKey} EXISTS on Pi Network Horizon`);
+        if (httpResponse.status === 200 && httpResponse.data) {
+          directHttpAccount = { exists: true, accountData: httpResponse.data };
         } else if (httpResponse.status === 404) {
-          directHttpTest = { exists: false };
-          logger.warn(`⚠️ Direct HTTP test confirms account ${publicKey} does NOT exist (404)`);
-        } else {
-          logger.warn(`⚠️ Direct HTTP test returned unexpected status: ${httpResponse.status}`);
+          directHttpAccount = { exists: false };
         }
       }
     } catch (httpError: any) {
-      logger.warn(`Direct HTTP test failed (this is OK, will try SDK): ${httpError?.message || String(httpError)}`);
-      directHttpTest = { exists: false, error: httpError };
+      // HTTP failed, will try SDK as fallback
+      directHttpAccount = { exists: false, error: httpError };
     }
     
     const servers = getBalanceCheckServers();
@@ -152,14 +145,6 @@ export class AccountService {
         try {
           if (retryCount > 0) {
             await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
-            logger.info(`Retrying ${serverName} for account ${publicKey} (retry ${retryCount}/${MAX_RETRIES_PER_SERVER - 1})`);
-          } else {
-            logger.info(`Fetching balances from ${serverName} for account ${publicKey} (attempt ${i + 1}/${servers.length})`);
-            try {
-              const horizonUrl = env.HORIZON_URL;
-              logger.info(`Using Horizon URL: ${horizonUrl}/accounts/${publicKey}`);
-            } catch (e) {
-            }
           }
  
           account = await currentServer.loadAccount(publicKey);
@@ -172,16 +157,24 @@ export class AccountService {
         } catch (error: any) {
           lastError = error;
           
-          logger.error(`❌ Error fetching account ${publicKey} from ${serverName}:`, {
-            message: error?.message || String(error),
-            code: error?.code,
-            status: error?.response?.status,
-            statusText: error?.response?.statusText,
-            errorType: error?.constructor?.name,
-            responseData: error?.response?.data,
-            responseHeaders: error?.response?.headers,
-            url: error?.config?.url || error?.request?.path,
-          });
+          // Only log detailed errors if HTTP fallback also failed or if it's not a 404
+          const is404 = error?.response?.status === 404 || 
+                       error?.constructor?.name === 'NotFoundError' ||
+                       (error?.response?.data?.type === 'https://stellar.org/horizon-errors/not_found');
+          
+          // If it's a 404 and we have HTTP data, don't log as error (we'll use HTTP fallback)
+          if (!(is404 && directHttpAccount?.exists === true)) {
+            logger.error(`❌ Error fetching account ${publicKey} from ${serverName}:`, {
+              message: error?.message || String(error),
+              code: error?.code,
+              status: error?.response?.status,
+              statusText: error?.response?.statusText,
+              errorType: error?.constructor?.name,
+              responseData: error?.response?.data,
+              responseHeaders: error?.response?.headers,
+              url: error?.config?.url || error?.request?.path,
+            });
+          }
           
           const isNetworkError =
             error?.code === 'ECONNREFUSED' ||
@@ -220,8 +213,7 @@ export class AccountService {
             }
           } else if (isNotFoundError) {
             // If SDK returns 404 but direct HTTP confirmed account exists, skip retries and use HTTP data
-            if (directHttpTest?.exists === true && directHttpTest?.accountData) {
-              logger.warn(`⚠️ SDK returned 404 but direct HTTP confirmed account exists - will use HTTP data as fallback`);
+            if (directHttpAccount?.exists === true && directHttpAccount?.accountData) {
               // Break out of retry loop to trigger HTTP fallback in outer handler
               break;
             }
@@ -305,7 +297,6 @@ export class AccountService {
         }
       }
 
-      logger.info(`✅ Successfully fetched balances for account ${publicKey} (${balances.length} assets)`);
       return { publicKey, balances, cached: false, accountExists: true };
     }
     
@@ -350,12 +341,10 @@ export class AccountService {
         logger.warn(`No cached balances available for account ${publicKey}, returning empty due to network error`);
         return { publicKey, balances: [], cached: false, accountExists: null };
         } else if (isNotFoundError) {
-          if (directHttpTest?.exists === true && directHttpTest?.accountData) {
-            logger.error(`🚨 CRITICAL: Direct HTTP test confirms account EXISTS, but SDK returned 404! This indicates a SDK/connection issue, not account not found.`);
-            logger.info(`Using HTTP response data as fallback since SDK failed but account exists`);
-            
+          if (directHttpAccount?.exists === true && directHttpAccount?.accountData) {
+            // SDK returned 404 but HTTP confirmed account exists - use HTTP data
             try {
-              const httpAccountData = directHttpTest.accountData;
+              const httpAccountData = directHttpAccount.accountData;
               
               const THRESHOLD = 0.1;
               const balances = (httpAccountData.balances || [])
@@ -405,7 +394,6 @@ export class AccountService {
                 }
               }
 
-              logger.info(`✅ Successfully parsed balances from HTTP response for account ${publicKey} (${balances.length} assets) - SDK workaround`);
               return { publicKey, balances, cached: false, accountExists: true };
             } catch (parseError: any) {
               logger.error(`Failed to parse account data from HTTP response: ${parseError?.message || String(parseError)}`);
@@ -510,7 +498,6 @@ export class AccountService {
           if (response && typeof response === 'object' && 'status' in response && 'data' in response) {
             const httpResponse = response as { status: number; data?: any };
             if (httpResponse.status === 200 && httpResponse.data?._embedded?.records) {
-              logger.info(`✅ Successfully fetched operations via HTTP fallback for account ${publicKey}`);
               return this.formatOperations(httpResponse.data._embedded.records, publicKey, limit, order);
             }
           }

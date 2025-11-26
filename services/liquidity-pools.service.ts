@@ -235,7 +235,6 @@ export class PoolService {
         }
       }
 
-      logger.info(`ℹ️ No existing pool found for ${tokenA.code}/${tokenB.code}`);
       return { exists: false };
     } catch (err: any) {
       logger.error(`❌ Error checking pool existence:`, err);
@@ -565,7 +564,6 @@ export class PoolService {
         .lean();
 
         if (cached) {
-          logger.info(`Using cached pools (from DB, expires: ${cached.expiresAt.toISOString()})`);
           return {
             records: cached.pools,
             nextCursor: undefined // Don't paginate cached data
@@ -740,7 +738,6 @@ export class PoolService {
 
         if (cached && cached.pools && cached.pools.length > 0) {
           const cachedPool = cached.pools[0];
-          logger.info(`Using cached pool ${liquidityPoolId} (from DB, expires: ${cached.expiresAt.toISOString()})`);
           return cachedPool;
         }
       } catch (dbError) {
@@ -821,7 +818,6 @@ export class PoolService {
       try {
         if (attempt > 1) {
           await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-          logger.info(`Retrying fetch for pool ${liquidityPoolId} (attempt ${attempt}/${MAX_RETRIES})`);
         } else {
         }
         
@@ -1199,7 +1195,6 @@ export class PoolService {
       const pairs = await Pair.find().sort({ createdAt: -1 }).lean();
       
       if (pairs.length === 0) {
-        logger.info(`ℹ️ No platform pools found`);
         return [];
       }
 

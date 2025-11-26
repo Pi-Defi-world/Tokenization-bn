@@ -106,7 +106,6 @@ export class TradeAnalyticsService {
       const queryString = new URLSearchParams(queryParams).toString();
       const url = `${horizonUrl}/trade_aggregations?${queryString}`;
 
-      logger.info(`🔹 Fetching trade aggregations: ${baseAssetCode || 'native'}/${counterAssetCode || 'native'}`);
 
       // Use horizon queue for rate-limited requests
       const response = await horizonQueue.get<any>(url, { timeout: 15000 }, 0);
@@ -115,7 +114,6 @@ export class TradeAnalyticsService {
         const httpResponse = response as { status: number; data?: any };
         if (httpResponse.status === 200 && httpResponse.data?._embedded?.records) {
           const aggregations = httpResponse.data._embedded.records as TradeAggregation[];
-          logger.info(`✅ Fetched ${aggregations.length} trade aggregations`);
           return {
             data: aggregations,
             pagination: {
@@ -175,7 +173,6 @@ export class TradeAnalyticsService {
       const queryString = new URLSearchParams(queryParams).toString();
       const url = `${horizonUrl}/trades?${queryString}`;
 
-      logger.info(`🔹 Fetching trades: ${baseAssetCode || 'native'}/${counterAssetCode || 'native'}`);
 
       // Use horizon queue for rate-limited requests
       const response = await horizonQueue.get<any>(url, { timeout: 15000 }, 0);
@@ -186,7 +183,6 @@ export class TradeAnalyticsService {
           const trades = httpResponse.data._embedded.records as Trade[];
           const nextCursor = trades.length > 0 ? trades[trades.length - 1].paging_token : undefined;
           
-          logger.info(`✅ Fetched ${trades.length} trades`);
           return {
             data: trades,
             pagination: {

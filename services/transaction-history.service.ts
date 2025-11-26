@@ -47,7 +47,6 @@ export class TransactionHistoryService {
         .lean();
 
         if (cachedTransactions) {
-          logger.info(`Using cached transactions for account ${publicKey} (cursor: ${cacheKey || 'first'}, expires: ${cachedTransactions.expiresAt.toISOString()})`);
           return {
             data: cachedTransactions.transactions,
             pagination: {
@@ -66,7 +65,6 @@ export class TransactionHistoryService {
 
     // Fetch from Horizon
     try {
-      logger.info(`Fetching transactions for account ${publicKey} (limit: ${limit}, order: ${order}, cursor: ${cursor || 'none'})`);
       
       let transactions: any[] = [];
       let nextCursor: string | undefined = undefined;
@@ -80,7 +78,6 @@ export class TransactionHistoryService {
           if (!isHexHash) {
             builder = builder.cursor(cursor);
           } else {
-            logger.warn(`⚠️ Cursor looks like a transaction hash, skipping cursor`);
           }
         }
 
@@ -111,7 +108,6 @@ export class TransactionHistoryService {
             if (response && typeof response === 'object' && 'status' in response && 'data' in response) {
               const httpResponse = response as { status: number; data?: any };
               if (httpResponse.status === 200 && httpResponse.data?._embedded?.records) {
-                logger.info(`✅ Successfully fetched transactions via HTTP fallback for account ${publicKey}`);
                 transactions = httpResponse.data._embedded.records;
                 nextCursor = this.extractNextCursor(transactions, limit);
               }
@@ -148,7 +144,6 @@ export class TransactionHistoryService {
         }
       }
 
-      logger.info(`✅ Successfully fetched ${formattedTransactions.length} transactions for account ${publicKey}`);
 
       return {
         data: formattedTransactions,
@@ -165,7 +160,6 @@ export class TransactionHistoryService {
 
       // Return cached data if available
       if (cachedTransactions && cachedTransactions.transactions.length > 0) {
-        logger.info(`Returning cached transactions due to error for account ${publicKey}`);
         return {
           data: cachedTransactions.transactions,
           pagination: {

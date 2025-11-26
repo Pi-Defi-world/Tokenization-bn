@@ -39,7 +39,6 @@ class SwapService {
           const response = await axios.get(accountUrl, { timeout: 10000 });
           
           if (response.status === 200 && response.data) {
-            logger.info(`✅ Successfully loaded account via HTTP fallback for ${publicKey}`);
             const accountData = response.data;
             const account = new StellarSdk.Account(publicKey, accountData.sequence);
             // Manually attach balances from HTTP response since SDK Account doesn't include them
@@ -52,13 +51,11 @@ class SwapService {
         }
       }
       
-      // If all else fails, throw the original error
       throw error;
     }
   }
 
   /**
-   * Check if a pool is empty (has no liquidity)
    */
   private isPoolEmpty(pool: any): boolean {
     if (!pool || !pool.reserves || pool.reserves.length < 2) {
@@ -70,11 +67,7 @@ class SwapService {
     const amountB = parseFloat(resB.amount || '0');
     const totalShares = parseFloat(pool.total_shares || '0');
     
-    // Pool is empty if:
-    // - Total shares is 0 or very close to 0
-    // - OR both reserves are 0 or very close to 0
-    // - OR any reserve is 0 or very close to 0
-    const MIN_THRESHOLD = 0.0000001; // Very small threshold to account for floating point precision
+    const MIN_THRESHOLD = 0.0000001; 
     
     return (
       totalShares < MIN_THRESHOLD ||
@@ -91,29 +84,25 @@ class SwapService {
     const publicKey = user.publicKey();
     const account = await this.loadAccountWithFallback(publicKey);
 
-    // Ensure balances array exists (from HTTP fallback if needed)
     if (!account.balances || !Array.isArray(account.balances)) {
       logger.error(`Account object missing balances array for ${publicKey}`);
       throw new Error(`Failed to load account balances. Cannot check trustline.`);
     }
 
-    // Case-insensitive trustline check (Pi Network stores exact case, but we match case-insensitively)
     const assetCodeUpper = assetCode.toUpperCase();
     const exists = account.balances.some(
       (b: any) => b.asset_code && b.asset_code.toUpperCase() === assetCodeUpper && b.asset_issuer === issuer
     );
     if (exists) {
-      // Find the actual asset code from the balance (correct case) for logging
       const existingBalance = account.balances.find(
         (b: any) => b.asset_code && b.asset_code.toUpperCase() === assetCodeUpper && b.asset_issuer === issuer
       );
       if (existingBalance) {
         logger.info(`ℹ️ Trustline already exists for ${existingBalance.asset_code}:${issuer}`);
       }
-      return; // Trustline exists, no need to create
+      return;  
     }
 
-    logger.info(`🔹 Creating trustline for ${assetCode}`);
     const asset = getAsset(assetCode, issuer);
     const baseFee = await server.fetchBaseFee();
 
@@ -139,10 +128,8 @@ class SwapService {
     publicKey?: string // Optional: for balance validation
   ) {
     try {
-      logger.info(`🔹 Quoting swap from ${from.code} ➡ ${to.code} in pool ${poolId}`);
       const pool = await poolService.getLiquidityPoolById(poolId);
 
-      // Check if pool is empty
       if (this.isPoolEmpty(pool)) {
         throw new Error(`Pool ${poolId} is empty (has no liquidity). Cannot perform swap.`);
       }
@@ -153,7 +140,6 @@ class SwapService {
       const input = parseFloat(amount);
       const fee = pool.fee_bp / 10000;
 
-      // Case-insensitive matching for asset codes
       const resAAssetCode = resA.asset === "native" ? "native" : resA.asset.split(':')[0].toUpperCase();
       const resBAssetCode = resB.asset === "native" ? "native" : resB.asset.split(':')[0].toUpperCase();
       const fromCodeUpper = from.code === "native" ? "native" : from.code.toUpperCase();
@@ -166,7 +152,6 @@ class SwapService {
         (inputAfterFee * outputReserve) / (inputReserve + inputAfterFee);
       const minOut = (outputAmount * (1 - slippagePercent / 100)).toFixed(7);
 
-      // Validate balance if publicKey is provided
       let availableBalance: number | null = null;
       let isSufficient = true;
       let balanceError: string | null = null;
@@ -195,7 +180,7 @@ class SwapService {
       }
 
       logger.info(
-        `💰 Quote result: expect ≈ ${outputAmount.toFixed(7)} ${to.code}, min after slippage: ${minOut}${availableBalance !== null ? `, available: ${availableBalance.toFixed(7)}` : ''}`
+        ` Quote result: expect ≈ ${outputAmount.toFixed(7)} ${to.code}, min after slippage: ${minOut}${availableBalance !== null ? `, available: ${availableBalance.toFixed(7)}` : ''}`
       );
 
       return {
@@ -236,8 +221,8 @@ class SwapService {
 
     try {
       logger.info(`----------------------------------------------`);
-      logger.info(`🔁 Swap via Pool: ${poolId}`);
-      logger.info(`💸 ${sendAmount} ${String(from)} ➡ ${String(to)} (slippage ${slippagePercent}%)`);
+      logger.info(` Swap via Pool: ${poolId}`);
+      logger.info(` ${sendAmount} ${String(from)} ➡ ${String(to)} (slippage ${slippagePercent}%)`);
 
       // Get pool first to extract exact asset codes (with correct case)
       const pool = await poolService.getLiquidityPoolById(poolId);
@@ -279,12 +264,10 @@ class SwapService {
       // Load account BEFORE trustline creation to get initial sequence
       let initialAccount = await this.loadAccountWithFallback(publicKey);
       const initialSequence = initialAccount.sequenceNumber ? initialAccount.sequenceNumber() : '0';
-      logger.info(`🔹 Initial account sequence before trustline: ${initialSequence}`);
 
       if (actualToCode !== 'native') {
         await this.ensureTrustline(userSecret, actualToCode, actualToIssuer);
         // Wait longer after trustline creation to ensure Horizon has updated
-        logger.info(`🔹 Waiting for Horizon to propagate trustline changes...`);
         await new Promise(resolve => setTimeout(resolve, 2000)); // Increased to 2 seconds
       }
 
@@ -319,7 +302,6 @@ class SwapService {
           const minReserve = 1.0; // Minimum reserve requirement
           const totalRequired = input + feeInPi + minReserve;
 
-          logger.info(`💰 Balance check: Available: ${availableBalance.toFixed(7)} ${fromCode}, Required: ${input.toFixed(7)} (amount) + ${feeInPi.toFixed(7)} (fee) + ${minReserve.toFixed(7)} (reserve) = ${totalRequired.toFixed(7)}`);
 
           if (availableBalance < totalRequired) {
             const errorMsg = `Insufficient balance. Available: ${availableBalance.toFixed(7)} ${fromCode === 'native' ? 'Test Pi' : fromCode}, Required: ${totalRequired.toFixed(7)} (including ${feeInPi.toFixed(7)} fee and ${minReserve.toFixed(7)} reserve)`;
@@ -337,7 +319,6 @@ class SwapService {
         );
         if (assetBalance) {
           const availableBalance = parseFloat(assetBalance.balance);
-          logger.info(`💰 Balance check: Available: ${availableBalance.toFixed(7)} ${actualFromCode}, Required: ${input.toFixed(7)}`);
 
           if (availableBalance < input) {
             const errorMsg = `Insufficient balance. Available: ${availableBalance.toFixed(7)} ${actualFromCode}, Required: ${input.toFixed(7)}`;
@@ -354,33 +335,28 @@ class SwapService {
       let retries = 0;
       const maxRetries = 5;
       
-      logger.info(`🔹 Reloading account after trustline creation to get updated sequence...`);
       
       while (retries < maxRetries) {
         try {
           // Additional delay for retries
           if (retries > 0) {
             const delay = 2000 * retries; // 2s, 4s, 6s, 8s
-            logger.info(`Retrying SDK account load after trustline (attempt ${retries + 1}/${maxRetries}) in ${delay}ms...`);
             await new Promise(resolve => setTimeout(resolve, delay));
           }
           
           // Use SDK - this is required for proper transaction building
           finalAccount = await server.loadAccount(publicKey);
           const newSequence = finalAccount.sequenceNumber();
-          logger.info(`✅ Reloaded account via SDK (sequence: ${newSequence}, was: ${initialSequence})`);
           
           // Verify sequence has increased (trustline transaction should increment it)
           if (actualToCode !== 'native') {
             const seqNum = BigInt(newSequence);
             const initSeq = BigInt(initialSequence);
             if (seqNum <= initSeq) {
-              logger.warn(`⚠️ Sequence number may not have updated yet (${newSequence} <= ${initialSequence}). Waiting...`);
               if (retries < maxRetries - 1) {
                 retries++;
                 continue;
               } else {
-                logger.warn(`⚠️ Sequence number still not updated after all retries, but proceeding with balance check`);
               }
             }
           }
@@ -399,7 +375,6 @@ class SwapService {
               if (response.status === 200 && response.data) {
                 const accountData = response.data;
                 const httpSequence = accountData.sequence;
-                logger.info(`✅ Using HTTP fallback account (sequence: ${httpSequence}, was: ${initialSequence})`);
                 
                 // Verify sequence has increased
                 if (actualToCode !== 'native') {
@@ -441,11 +416,9 @@ class SwapService {
       }
       
       const finalSequence = finalAccount.sequenceNumber();
-      logger.info(`🔹 Final account sequence for transaction: ${finalSequence}`);
       
       // CRITICAL: Re-validate balance AFTER trustline creation and account reload
       // The trustline transaction costs a fee, so the balance may have changed
-      logger.info(`🔹 Re-validating balance after trustline creation...`);
       
       // Get latest balances from the reloaded account
       let latestBalances: any[] = [];
@@ -459,7 +432,6 @@ class SwapService {
           const response = await axios.get(accountUrl, { timeout: 10000 });
           if (response.status === 200 && response.data && response.data.balances) {
             latestBalances = response.data.balances;
-            logger.info(`Fetched latest balances via HTTP for validation`);
           }
         } catch (balanceError) {
           logger.warn(`Failed to fetch latest balances for validation: ${balanceError instanceof Error ? balanceError.message : String(balanceError)}`);
@@ -529,7 +501,6 @@ class SwapService {
       // The pathPaymentStrictSend operation will find the best path including liquidity pools
       const path: StellarSdk.Asset[] = [];
       
-      logger.info(`🔹 Building transaction for AMM swap (network will find liquidity pool path)`);
       
       let tx;
       try {
@@ -565,13 +536,8 @@ class SwapService {
       }
 
       tx.sign(user);
-      logger.info(`🔹 Submitting swap transaction...`);
-      logger.info(`🔹 Transaction details: from=${fromCode}, to=${toCode}, amount=${sendAmount}, minOut=${minDestAmount}`);
-      
       let res;
       try {
-        logger.info(`🔹 Transaction XDR length: ${tx.toXDR().length} bytes`);
-        logger.info(`🔹 Transaction sequence: ${finalAccount.sequenceNumber()}`);
         res = await server.submitTransaction(tx);
       } catch (submitError: any) {
         // Log detailed error information BEFORE logger simplification
@@ -759,11 +725,9 @@ class SwapService {
         .lean();
 
         if (cached) {
-          logger.info(`Using cached pools for pair ${tokenA}/${tokenB} (from DB, expires: ${cached.expiresAt.toISOString()})`);
           // Filter out empty pools from cache
           const nonEmptyPools = (cached.pools || []).filter((pool: any) => !this.isPoolEmpty(pool));
           if (nonEmptyPools.length < cached.pools.length) {
-            logger.info(`Filtered out ${cached.pools.length - nonEmptyPools.length} empty pools from cache`);
           }
           return { success: true, pools: nonEmptyPools };
         }
@@ -795,7 +759,6 @@ class SwapService {
       });
       
       if (registeredPairs.length > 0) {
-        logger.info(`Found ${registeredPairs.length} registered pair(s) for ${tokenA}/${tokenB}`);
         for (const pair of registeredPairs) {
           try {
             const pool = await poolService.getLiquidityPoolById(pair.poolId, useCache);
@@ -818,7 +781,6 @@ class SwapService {
       }
 
       // Always search Horizon pools to find all available pools (including platform pairs)
-      logger.info(`Searching Horizon pools for ${tokenA}/${tokenB}`);
       let cursor: string | undefined = undefined;
       let totalFetched = 0;
       let hasMore = true;
@@ -849,7 +811,6 @@ class SwapService {
             }
         }
 
-        logger.info(`📦 Fetched ${totalFetched} pools so far... (${matchedPools.length} matches)`);
 
           // Validate nextCursor before using it - must be a valid paging token, not a pool ID
           const nextCursor = result.nextCursor;
@@ -857,7 +818,6 @@ class SwapService {
             // Validate it's not a hex hash (pool ID) - paging tokens are base64 encoded
             const isHexHash = /^[0-9a-f]{64}$/i.test(nextCursor);
             if (isHexHash) {
-              logger.warn(`⚠️ nextCursor looks like a pool ID (hex hash), not a paging token. Stopping pagination.`);
               cursor = undefined;
               hasMore = false;
             } else {
@@ -874,7 +834,6 @@ class SwapService {
           
           if (nonEmptyMatchedPools.length > 0) {
             if (nonEmptyMatchedPools.length < matchedPools.length) {
-              logger.info(`Filtered out ${matchedPools.length - nonEmptyMatchedPools.length} empty pools from matches`);
             }
             logger.success(`✅ Found ${nonEmptyMatchedPools.length} pools containing ${tokenA}/${tokenB}`);
             
@@ -923,7 +882,6 @@ class SwapService {
                                 (poolError?.message && poolError.message.toLowerCase().includes('bad request'));
           
           if (isCursorError) {
-            logger.warn(`⚠️ Invalid cursor or Bad Request detected, resetting pagination...`);
             cursor = undefined; // Reset cursor
             hasMore = false; // Stop pagination
             break;
@@ -936,7 +894,6 @@ class SwapService {
             if (matchedPools.length > 0) {
               const nonEmptyMatchedPools = matchedPools.filter((pool: any) => !this.isPoolEmpty(pool));
               if (nonEmptyMatchedPools.length > 0) {
-                logger.info(`Returning ${nonEmptyMatchedPools.length} pools found before errors occurred`);
                 if (useCache) {
                   try {
                     const PoolCache = require('../models/PoolCache').default;
@@ -1040,7 +997,6 @@ class SwapService {
 
   public async distributeFees(poolId: string) {
     try {
-      logger.info(`🔹 Distributing accumulated fees for pool ${poolId}`);
       const pool = await poolService.getLiquidityPoolById(poolId);
       const [resA, resB] = pool.reserves;
 
@@ -1089,7 +1045,6 @@ class SwapService {
       const toAsset =
         to.code === 'native' ? StellarSdk.Asset.native() : getAsset(to.code, to.issuer!);
 
-      logger.info(`🔹 Searching liquidity pool for ${from.code} & ${to.code}`);
       const allPools = await poolService.getLiquidityPools(50);
       const match = allPools.records.find((p: any) => {
         const assets = p.reserves.map((r: any) => {
@@ -1127,8 +1082,6 @@ class SwapService {
 
       const minDestAmount = (outputAmount * (1 - slippagePercent / 100)).toFixed(7);
 
-      logger.info(`🔹 Expected output: ${outputAmount.toFixed(7)} ${to.code}`);
-      logger.info(`🔹 Min receive (after slippage): ${minDestAmount} ${to.code}`);
 
       const account = await this.loadAccountWithFallback(publicKey);
       const baseFee = await server.fetchBaseFee();
@@ -1152,11 +1105,9 @@ class SwapService {
 
       tx.sign(user);
 
-      logger.info(`🔹 Submitting swap transaction...`);
       const res = await server.submitTransaction(tx);
 
       logger.success(`✅ Swap successful!`);
-      logger.info(`🔹 TX hash: ${res.hash}`);
       logger.info(`⏱ Duration: ${(Date.now() - start) / 1000}s`);
       logger.info('----------------------------------------------');
 
