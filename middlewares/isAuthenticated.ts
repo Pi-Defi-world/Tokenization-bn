@@ -13,7 +13,6 @@ export const isAuthenticated = async (
   const token = req.headers.authorization?.split(" ")[1];
 
   if (!token) {
-    logger.warn(`Authorization header missing or malformed🤢: header 👉 ${req.headers.authorization}`);
     return res.status(401).json({ message: "Authorization token missing" });
   }
 

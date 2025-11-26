@@ -4,6 +4,7 @@ import env from '../config/env';
 import { logger } from '../utils/logger';
 import { PoolService } from './liquidity-pools.service';
 import { AccountService } from './account.service';
+import { Pair, IPair } from '../models/Pair';
 import axios from 'axios';
 
 const poolService = new PoolService();
@@ -772,9 +773,53 @@ class SwapService {
     }
 
     try {
-      logger.info(`🔹 Searching pools for pair: ${tokenA}/${tokenB}`);
-      let cursor: string | undefined = undefined;
+      // Normalize token codes for comparison
+      const tokenAUpper = tokenA === "native" ? "native" : tokenA.toUpperCase();
+      const tokenBUpper = tokenB === "native" ? "native" : tokenB.toUpperCase();
+      
       const matchedPools: any[] = [];
+      const seenPoolIds = new Set<string>();
+      
+      // First, check Pair model for registered pairs and fetch their pools
+      const allPairs = await Pair.find({}).lean();
+      
+      // Case-insensitive matching for registered pairs
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const registeredPairs = allPairs.filter((pair: any) => {
+        const baseUpper = String(pair.baseToken || '').toUpperCase();
+        const quoteUpper = String(pair.quoteToken || '').toUpperCase();
+        return (
+          (baseUpper === tokenAUpper && quoteUpper === tokenBUpper) ||
+          (baseUpper === tokenBUpper && quoteUpper === tokenAUpper)
+        );
+      });
+      
+      if (registeredPairs.length > 0) {
+        logger.info(`Found ${registeredPairs.length} registered pair(s) for ${tokenA}/${tokenB}`);
+        for (const pair of registeredPairs) {
+          try {
+            const pool = await poolService.getLiquidityPoolById(pair.poolId, useCache);
+            if (pool && !this.isPoolEmpty(pool)) {
+              // Verify the pool actually contains the requested tokens
+              const assets = pool.reserves.map((r: any) => {
+                const assetStr = r.asset || "";
+                if (assetStr === "native") return "native";
+                return assetStr.split(':')[0].toUpperCase();
+              });
+              if (assets.includes(tokenAUpper) && assets.includes(tokenBUpper)) {
+                matchedPools.push(pool);
+                seenPoolIds.add(pool.id);
+              }
+            }
+          } catch (poolError: any) {
+            logger.warn(`Failed to fetch pool ${pair.poolId} for registered pair: ${poolError?.message || String(poolError)}`);
+          }
+        }
+      }
+
+      // Always search Horizon pools to find all available pools (including platform pairs)
+      logger.info(`Searching Horizon pools for ${tokenA}/${tokenB}`);
+      let cursor: string | undefined = undefined;
       let totalFetched = 0;
       let hasMore = true;
       let consecutiveErrors = 0;
@@ -787,8 +832,8 @@ class SwapService {
         totalFetched += result.records.length;
 
         for (const pool of result.records) {
-            // Skip empty pools
-            if (this.isPoolEmpty(pool)) {
+            // Skip empty pools and pools we've already added
+            if (this.isPoolEmpty(pool) || seenPoolIds.has(pool.id)) {
               continue;
             }
             
@@ -797,12 +842,11 @@ class SwapService {
               if (assetStr === "native") return "native";
               return assetStr.split(':')[0];
             });
-            const tokenAUpper = tokenA === "native" ? "native" : tokenA.toUpperCase();
-            const tokenBUpper = tokenB === "native" ? "native" : tokenB.toUpperCase();
             const assetsUpper = assets.map((a: string) => a === "native" ? "native" : a.toUpperCase());
             if (assetsUpper.includes(tokenAUpper) && assetsUpper.includes(tokenBUpper)) {
-            matchedPools.push(pool);
-          }
+              matchedPools.push(pool);
+              seenPoolIds.add(pool.id);
+            }
         }
 
         logger.info(`📦 Fetched ${totalFetched} pools so far... (${matchedPools.length} matches)`);

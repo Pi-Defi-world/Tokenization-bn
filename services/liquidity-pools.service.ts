@@ -50,7 +50,6 @@ export class PoolService {
       const user = StellarSdk.Keypair.fromSecret(userSecret);
       const publicKey = user.publicKey();
 
-      logger.info(`🔹 Checking trustline for ${assetCode} (${issuer}) on ${publicKey}`);
 
       const account = await server.loadAccount(publicKey);
 
@@ -59,11 +58,9 @@ export class PoolService {
       );
 
       if (trustlineExists) {
-        logger.info(`✅ Trustline for ${assetCode} already exists`);
         return;
       }
 
-      logger.info(`🔹 Creating trustline for ${assetCode}`);
 
       const asset = getAsset(assetCode, issuer);
       let fee: string = "100000"; // Default fee: 0.01 Pi
@@ -109,7 +106,6 @@ export class PoolService {
       };
       
       logger.success(`✅ Trustline established for ${assetCode}`);
-      logger.info(`🔹 TX hash: ${res.hash}`);
     } catch (err: any) {
       logger.error(`❌ Error ensuring trustline:`, err);
       throw err;
@@ -188,7 +184,6 @@ export class PoolService {
       }
 
       // If not in cache, search through pools
-      logger.info(`🔹 Checking if pool exists for pair: ${tokenA.code}/${tokenB.code}`);
       
       // Try to get pools for this pair (limit to first few to avoid long searches)
       const result = await this.getLiquidityPools(50, undefined, useCache);
@@ -257,18 +252,8 @@ export class PoolService {
     amountB: string
   ) {
     try {
-      // Verify we're using Pi Horizon API
-      const serverUrl = (server as any).serverURL?.toString() || env.HORIZON_URL;
-      logger.info(`🔹 Using Pi Horizon API: ${serverUrl}`);
-      if (!serverUrl.includes('minepi.com')) {
-        logger.error(`⚠️ WARNING: Server URL does not appear to be Pi Horizon! Using: ${serverUrl}`);
-      }
-      
       const user = StellarSdk.Keypair.fromSecret(userSecret);
       const publicKey = user.publicKey();
-
-      logger.info(`🔹 Creating liquidity pool for user: ${publicKey}`);
-      logger.info(`🔹 Token A: ${tokenA.code}, Token B: ${tokenB.code}`);
 
       // Check if pool already exists
       const poolCheck = await this.checkPoolExists(tokenA, tokenB, true);
@@ -344,10 +329,7 @@ export class PoolService {
         poolShareAsset.getLiquidityPoolParameters()
       ).toString('hex');
 
-      logger.info(`🔹 Liquidity Pool ID (hex): ${poolId}`);
-
       const baseFee = await server.fetchBaseFee();
-      logger.info(`🔹 Ensuring trustline for pool share asset...`);
 
       const trustTx = new StellarSdk.TransactionBuilder(account, {
         fee: baseFee.toString(),
@@ -370,7 +352,6 @@ export class PoolService {
         const trustTxXdr = trustTx.toXDR();
         const submitUrl = `${env.HORIZON_URL}/transactions`;
         
-        logger.info(`🔹 Submitting trustline transaction via direct HTTP: ${submitUrl}`);
         const response = await axios.post(submitUrl, `tx=${encodeURIComponent(trustTxXdr)}`, {
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
@@ -387,7 +368,6 @@ export class PoolService {
         };
         
         logger.success(`✅ Trustline established for pool share asset`);
-        logger.info(`🔹 Trustline TX hash: ${trustRes.hash}`);
       } catch (submitError: any) {
         logger.error(`❌ Trustline transaction submission failed`);
         if (submitError.response?.data) {
@@ -405,8 +385,6 @@ export class PoolService {
       const exactPrice = parseFloat(amountA) / parseFloat(amountB);
       const minPrice = (exactPrice * 0.9).toFixed(7);
       const maxPrice = (exactPrice * 1.1).toFixed(7);
-
-      logger.info(`🔹 Price range: exact=${exactPrice}, min=${minPrice}, max=${maxPrice}`);
 
       const tx = new StellarSdk.TransactionBuilder(account, {
         fee: baseFee.toString(),
@@ -427,13 +405,11 @@ export class PoolService {
       tx.sign(user);
       
       // Submit transaction using direct HTTP (workaround for SDK URL construction bug)
-      // The SDK sometimes constructs incorrect URLs (e.g., /transactions/transactions)
       let result;
       try {
         const txXdr = tx.toXDR();
         const submitUrl = `${env.HORIZON_URL}/transactions`;
         
-        logger.info(`🔹 Submitting deposit transaction via direct HTTP: ${submitUrl}`);
         const response = await axios.post(submitUrl, `tx=${encodeURIComponent(txXdr)}`, {
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
@@ -450,8 +426,6 @@ export class PoolService {
         };
         
         logger.success(`🚀 Liquidity pool created and liquidity added successfully!`);
-        logger.info(`🔹 Pool ID: ${poolId}`);
-        logger.info(`🔹 TX hash: ${result.hash}`);
       } catch (submitError: any) {
         logger.error(`❌ Transaction submission failed`);
         if (submitError.response?.data) {
@@ -603,52 +577,31 @@ export class PoolService {
     }
 
     try {
-      // Log the server URL being used
       const serverUrl = (server as any).serverURL?.toString() || env.HORIZON_URL;
-      logger.info(`🔹 Fetching liquidity pools from Pi Horizon: ${serverUrl}`);
       
       // Validate limit is within acceptable range
-      const validLimit = Math.min(Math.max(1, limit), 200); // Between 1 and 200
-      if (validLimit !== limit) {
-        logger.warn(`⚠️ Limit ${limit} adjusted to ${validLimit} (must be between 1 and 200)`);
-      }
+      const validLimit = Math.min(Math.max(1, limit), 200);
       
-      // Build query parameters manually to log them
+      // Build query parameters
       const queryParams: string[] = [`limit=${validLimit}`];
       if (cursor && cursor.length > 0) {
-        const isHexHash = /^[0-9a-f]{64}$/i.test(cursor);
-        if (!isHexHash) {
-          queryParams.push(`cursor=${encodeURIComponent(cursor)}`);
-        }
+        queryParams.push(`cursor=${encodeURIComponent(cursor)}`);
       }
-      const expectedUrl = `${serverUrl}/liquidity_pools?${queryParams.join('&')}`;
       const apiPath = `/liquidity_pools?${queryParams.join('&')}`;
-      logger.info(`🔹 Expected request URL: ${expectedUrl}`);
       
       let builder = server.liquidityPools().limit(validLimit);
-      
       if (cursor && cursor.length > 0) {
-        const isHexHash = /^[0-9a-f]{64}$/i.test(cursor);
-        if (isHexHash) {
-          logger.warn(`⚠️ Cursor looks like a hex hash (pool ID?), skipping cursor. Use paging_token instead.`);
-        } else {
-          try {
-            builder = builder.cursor(cursor);
-            logger.info(`🔹 Using cursor for pagination: ${cursor.substring(0, 20)}...`);
-          } catch (cursorError: any) {
-            logger.error(`❌ Invalid cursor format: ${cursor}. Error: ${cursorError?.message || String(cursorError)}`);
-            throw new Error(`Invalid cursor format. Cursor must be a valid paging token, not a pool ID or transaction hash.`);
-          }
+        try {
+          builder = builder.cursor(cursor);
+        } catch (cursorError: any) {
+          logger.error(`Invalid cursor format: ${cursorError?.message || String(cursorError)}`);
+          throw new Error(`Invalid cursor format. Cursor must be a valid paging token.`);
         }
-      } else {
-        logger.info(`🔹 Fetching first page of liquidity pools (limit: ${validLimit})`);
       }
 
       let pools;
       // Use direct HTTP request first to avoid SDK URL construction issues
-      // The SDK sometimes constructs incorrect URLs (e.g., /transactions/liquidity_pools)
       try {
-        logger.info(`🔹 Using direct HTTP request for liquidity pools (more reliable than SDK)`);
         const response = await horizonQueue.get<any>(apiPath, {
           timeout: 10000,
           validateStatus: (status: number) => status < 500,
@@ -657,7 +610,6 @@ export class PoolService {
         if (response && typeof response === 'object' && 'status' in response) {
           const httpResponse = response as { status: number; data?: any };
           if (httpResponse.status === 200 && httpResponse.data) {
-            logger.info(`✅ Direct HTTP request succeeded`);
             pools = {
               records: httpResponse.data._embedded?.records || [],
               paging_token: httpResponse.data._links?.next?.href ? 
@@ -672,16 +624,10 @@ export class PoolService {
         }
       } catch (httpError: any) {
         // If direct HTTP fails, try SDK as fallback
-        logger.warn(`⚠️ Direct HTTP request failed, trying SDK as fallback...`);
-        if (httpError) {
-          logger.error(`HTTP Error: ${httpError?.message || String(httpError)}`, httpError);
-        }
-        
         try {
           pools = await builder.call();
-          logger.info(`✅ SDK fallback succeeded`);
         } catch (sdkError: any) {
-          logger.error(`❌ Both direct HTTP and SDK failed`);
+          logger.error(`Failed to fetch liquidity pools`);
           logger.error(`SDK Error:`, {
             message: sdkError?.message,
             status: sdkError?.response?.status,
@@ -699,34 +645,14 @@ export class PoolService {
         }
       }
 
-      logger.info(`🔹 Fetched ${pools.records.length} liquidity pools`);
-      pools.records.forEach((pool: any, i: number) => {
-        logger.info(
-          [
-            `#${i + 1} Pool ID: ${pool.id}`,
-            `Assets: ${pool.reserves.map((r: any) => r.asset).join(' & ')}`,
-            `Total Shares: ${pool.total_shares}`,
-            `Fee: ${pool.fee_bp / 100}%`,
-            `Reserves: ${pool.reserves.map((r: any) => `${r.asset}: ${r.amount}`).join(', ')}`
-          ].join(' | ')
-        );
-      });
-
       let nextCursor: string | undefined = undefined;
       try {
         if (pools.records.length === limit && pools.paging_token) {
-          // Validate paging_token is not a pool ID (hex hash)
-          const pagingToken = String(pools.paging_token);
-          const isHexHash = /^[0-9a-f]{64}$/i.test(pagingToken);
-          if (!isHexHash) {
-            nextCursor = pagingToken;
-          } else {
-            logger.warn(`⚠️ paging_token looks like a pool ID (hex hash), not using it as cursor`);
-            nextCursor = undefined;
-          }
+          // Use paging_token as cursor for next page
+          nextCursor = String(pools.paging_token);
         }
       } catch (e) {
-        logger.warn(`Error extracting paging_token: ${e instanceof Error ? e.message : String(e)}`);
+        // Ignore paging token extraction errors
       }
 
       if (useCache && !cursor) {
@@ -767,7 +693,6 @@ export class PoolService {
       });
 
       if (nonEmptyPools.length < pools.records.length) {
-        logger.info(`🔹 Filtered out ${pools.records.length - nonEmptyPools.length} empty pools`);
       }
 
       return {
@@ -791,84 +716,7 @@ export class PoolService {
         }
       }
       
-      logger.error('❌ Error fetching liquidity pools:', err);
-      
-      // Log the server URL to verify we're using Pi Horizon
-      const serverUrl = (server as any).serverURL?.toString() || env.HORIZON_URL;
-      logger.error(`Server URL used: ${serverUrl}`);
-      
-      // Try to reconstruct the request URL that was made
-      const queryParams: string[] = [`limit=${limit}`];
-      if (cursor && cursor.length > 0) {
-        const isHexHash = /^[0-9a-f]{64}$/i.test(cursor);
-        if (!isHexHash) {
-          queryParams.push(`cursor=${encodeURIComponent(cursor)}`);
-        }
-      }
-      const reconstructedUrl = `${serverUrl}/liquidity_pools?${queryParams.join('&')}`;
-      logger.error(`Reconstructed request URL: ${reconstructedUrl}`);
-      
-      // Log detailed error information for Bad Request errors
-      if (err?.response?.status === 400 || err?.status === 400) {
-        const errorDetails: any = {
-          status: err.response?.status || err.status || 400,
-          cursor: cursor,
-          limit: limit,
-          serverUrl: serverUrl,
-          reconstructedUrl: reconstructedUrl,
-        };
-        
-        // Try to extract URL and method from various possible locations
-        errorDetails.url = err.config?.url || 
-                         err.request?.path || 
-                         err.url || 
-                         (err as any).requestUrl || 
-                         (err as any).request?.url ||
-                         reconstructedUrl;
-        errorDetails.method = err.config?.method || err.method || 'GET';
-        
-        // Extract full error response
-        if (err.response?.data) {
-          errorDetails.data = err.response.data;
-          errorDetails.extras = err.response.data?.extras;
-          errorDetails.invalid_field = err.response.data?.extras?.invalid_field;
-          errorDetails.reason = err.response.data?.extras?.reason || 
-                               err.response.data?.detail || 
-                               err.response.data?.message || 
-                               err.response.data?.title;
-          errorDetails.type = err.response.data?.type;
-        } else if (err.message) {
-          errorDetails.message = err.message;
-        }
-        
-        // Check if error has request information in different formats
-        if ((err as any).request) {
-          errorDetails.requestUrl = (err as any).request?.path || (err as any).request?.url;
-        }
-        
-        // Try to get URL from SDK's internal state
-        if ((err as any).requestUrl === undefined && (server as any).serverURL) {
-          errorDetails.sdkServerUrl = (server as any).serverURL.toString();
-        }
-        
-        logger.error('Bad Request details:', JSON.stringify(errorDetails, null, 2));
-        
-        // Verify we're using Pi Horizon, not Stellar
-        if (!serverUrl.includes('minepi.com')) {
-          logger.error(`⚠️ WARNING: Server URL does not appear to be Pi Horizon! Using: ${serverUrl}`);
-        }
-        
-        // If it's a bad request with invalid parameters, provide a helpful error message
-        if (errorDetails.invalid_field || errorDetails.reason) {
-          const helpfulError = new Error(
-            `Invalid request to Pi Horizon API: ${errorDetails.reason || errorDetails.invalid_field || 'Bad Request'}`
-          );
-          (helpfulError as any).status = 400;
-          (helpfulError as any).details = errorDetails;
-          throw helpfulError;
-        }
-      }
-      
+      logger.error('Error fetching liquidity pools:', err);
       throw err;
     }
   }
@@ -975,11 +823,9 @@ export class PoolService {
           await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
           logger.info(`Retrying fetch for pool ${liquidityPoolId} (attempt ${attempt}/${MAX_RETRIES})`);
         } else {
-          logger.info(`🔹 Fetching liquidity pool details for ID: ${liquidityPoolId}`);
         }
         
         const pool = await server.liquidityPools().liquidityPoolId(liquidityPoolId).call();
-        logger.info(`🔹 Pool found: ${pool.id} | Assets: ${pool.reserves.map((r: any) => r.asset).join(' & ')}`);
         
         if (useCache) {
           try {
@@ -1309,7 +1155,6 @@ export class PoolService {
 
   public async getUserLiquidityPools(userPublicKey: string) {
     try {
-      logger.info(`🔹 Fetching liquidity pools for user: ${userPublicKey}`);
   
       const account = await server.loadAccount(userPublicKey);
 
@@ -1349,7 +1194,6 @@ export class PoolService {
 
   public async getPlatformPools(useCache: boolean = true) {
     try {
-      logger.info(`🔹 Fetching platform pools (pools created on this platform)`);
 
       // Query Pair model for all registered pools
       const pairs = await Pair.find().sort({ createdAt: -1 }).lean();
@@ -1359,7 +1203,6 @@ export class PoolService {
         return [];
       }
 
-      logger.info(`🔹 Found ${pairs.length} registered pairs, fetching pool details...`);
 
       const platformPools = [];
       for (const pair of pairs) {
