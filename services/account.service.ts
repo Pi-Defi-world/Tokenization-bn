@@ -342,7 +342,7 @@ export class AccountService {
         return { publicKey, balances: [], cached: false, accountExists: null };
         } else if (isNotFoundError) {
           if (directHttpAccount?.exists === true && directHttpAccount?.accountData) {
-            // SDK returned 404 but HTTP confirmed account exists - use HTTP data
+            // SDK returned 404 but HTTP confirmed account exists - use HTTP data silently
             try {
               const httpAccountData = directHttpAccount.accountData;
               

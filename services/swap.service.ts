@@ -352,12 +352,9 @@ class SwapService {
           if (actualToCode !== 'native') {
             const seqNum = BigInt(newSequence);
             const initSeq = BigInt(initialSequence);
-            if (seqNum <= initSeq) {
-              if (retries < maxRetries - 1) {
-                retries++;
-                continue;
-              } else {
-              }
+            if (seqNum <= initSeq && retries < maxRetries - 1) {
+              retries++;
+              continue;
             }
           }
           

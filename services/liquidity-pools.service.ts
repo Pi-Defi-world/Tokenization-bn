@@ -814,11 +814,49 @@ export class PoolService {
     let lastError: any = null;
     const MAX_RETRIES = 2;
     
+    // Use direct HTTP first (more reliable than SDK)
+    try {
+      const poolPath = `/liquidity_pools/${liquidityPoolId}`;
+      const response = await horizonQueue.get<any>(poolPath, {
+        timeout: 10000,
+        validateStatus: (status: number) => status < 500,
+      }, 1);
+      
+      if (response && typeof response === 'object' && 'status' in response) {
+        const httpResponse = response as { status: number; data?: any };
+        if (httpResponse.status === 200 && httpResponse.data) {
+          const pool = httpResponse.data;
+          
+          if (useCache) {
+            try {
+              const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
+              await PoolCache.findOneAndUpdate(
+                { cacheKey },
+                {
+                  cacheKey,
+                  pools: [pool],
+                  lastFetched: new Date(),
+                  expiresAt,
+                },
+                { upsert: true, new: true }
+              );
+            } catch (dbError) {
+              logger.warn(`Failed to save pool cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+            }
+          }
+          
+          return pool;
+        }
+      }
+    } catch (httpError: any) {
+      // HTTP failed, try SDK as fallback
+    }
+    
+    // Fallback to SDK
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         if (attempt > 1) {
           await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-        } else {
         }
         
         const pool = await server.liquidityPools().liquidityPoolId(liquidityPoolId).call();
