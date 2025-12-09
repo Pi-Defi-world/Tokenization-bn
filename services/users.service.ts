@@ -1,4 +1,5 @@
 import { platformAPIClient } from "../config/platiform.config";
+import env from "../config/env";
 import User from "../models/User";
 import { IAuthResult, IUser } from "../types";
 import { logger } from "../utils/logger";
@@ -46,9 +47,19 @@ class UsersService {
       // Log more details about the error for debugging
       const errorMessage = error?.response?.data?.message || error?.message || 'Unknown error';
       const statusCode = error?.response?.status || error?.status;
+      const isTimeout = error?.code === 'ECONNABORTED' || errorMessage?.includes('timeout');
       
       logger.error(`Pi API authentication failed: ${errorMessage} (Status: ${statusCode})`);
       logger.error(`Access token (first 20 chars): ${authResult.accessToken?.substring(0, 20)}...`);
+      
+      if (isTimeout) {
+        logger.error('Pi API request timed out. Possible causes:');
+        logger.error('1. Pi Network API server is unreachable or slow');
+        logger.error('2. Network connectivity issues');
+        logger.error('3. PLATFORM_API_URL may be incorrect');
+        logger.error(`   Current URL: ${env.PLATFORM_API_URL || 'not set'}`);
+        throw new Error("Pi Network API request timed out. Please check your network connection and try again.");
+      }
       
       // Provide more specific error message
       if (statusCode === 401 || statusCode === 403) {
