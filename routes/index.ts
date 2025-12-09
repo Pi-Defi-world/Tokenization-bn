@@ -9,8 +9,6 @@ import pairRoutes from "./pairs.routes";
 import orderbookRoutes from "./orderbook.routes";
 import tradeRoutes from "./trade.routes";
 import accountRoutes from "./account.routes";
-import passkeyRoutes from "./passkey.routes";
-import encryptedSecretRoutes from "./encrypted-secret.routes";
 
 
 
@@ -25,7 +23,6 @@ appRoutes.use("/pairs", pairRoutes)
 appRoutes.use("/market", orderbookRoutes)
 appRoutes.use("/trade", tradeRoutes)
 appRoutes.use("/account", accountRoutes)
-appRoutes.use("/passkey", passkeyRoutes)
-appRoutes.use("/encrypted-secret", encryptedSecretRoutes)
+// Encrypted secret and passkey routes removed - users now provide secret seed directly for transactions
 
 export default appRoutes

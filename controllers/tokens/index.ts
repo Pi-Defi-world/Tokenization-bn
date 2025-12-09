@@ -3,13 +3,41 @@ import { tokenService } from "../../services/token.service";
 import { ICreateTokenPayload, IUser } from "../../types";
 import { MintTokenParams } from "../../services/token.service";
 
+export const getMintFee = async (req: Request, res: Response) => {
+  try {
+    // Platform fee is always 100 Pi
+    const platformFee = "100"; // 100 Pi
+    const platformFeeStroops = "1000000000"; // 100 Pi in stroops
+    
+    // Get base fee from blockchain
+    let baseFee = "0.01"; // Default
+    try {
+      const { server } = await import("../../config/stellar");
+      const fetchedFee = await server.fetchBaseFee();
+      baseFee = (parseFloat(fetchedFee.toString()) / 10000000).toFixed(7); // Convert stroops to Pi
+    } catch (error) {
+      // Use default if fetch fails
+    }
+
+    return res.json({
+      success: true,
+      fee: {
+        platformFee: platformFee, // 100 Pi
+        platformFeeStroops: platformFeeStroops,
+        baseFee: baseFee, // Blockchain base fee in Pi
+        totalFee: (parseFloat(platformFee) + parseFloat(baseFee)).toFixed(7), // Total in Pi
+        feeRecipient: process.env.PI_TEST_USER_PUBLIC_KEY,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 export const getTokens = async (req: Request, res: Response) => {
   try {
     const currentUser = (req as any).currentUser as IUser;
-
-    // if (!currentUser) {
-    //   return res.status(401).json({ success: false, message: "Not authenticated" });
-    // }
+ 
 
     const tokens = await tokenService.getTokens();
 

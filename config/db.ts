@@ -1,7 +1,6 @@
 import mongoose from 'mongoose';
 import env from './env';
 import { logger } from '../utils/logger';
-import Passkey from '../models/Passkey';
 
 export const connectDB = async () => {
   const mongoURI = env.MONGO_URI;
@@ -21,13 +20,6 @@ export const connectDB = async () => {
       // Mongoose 8.x disables buffering by default when not connected
     });
     logger.success('MongoDB connected with optimized connection pool');
-    
-    try {
-      await Passkey.createIndexes();
-      logger.info('Passkey collection indexes verified');
-    } catch (indexError: any) {
-      logger.warn(`Passkey index creation warning: ${indexError.message}`);
-    }
   } catch (error: any) {
     logger.error('MongoDB connection error:', error.message || error);
     process.exit(1);

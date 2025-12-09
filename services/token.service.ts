@@ -22,6 +22,57 @@ class TokenService {
     this.accountService = new AccountService();
   }
 
+  private async loadAccountWithFallback(publicKey: string): Promise<any> {
+    const maxRetries = 3;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        if (attempt > 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        }
+        return await server.loadAccount(publicKey);
+      } catch (error: any) {
+        const isNotFoundError =
+          error?.response?.status === 404 ||
+          error?.constructor?.name === 'NotFoundError' ||
+          (error?.response?.data?.type === 'https://stellar.org/horizon-errors/not_found') ||
+          (error?.response?.data?.status === 404) ||
+          (error?.message && (
+            error.message.toLowerCase().includes('not found') ||
+            error.message.toLowerCase().includes('404')
+          ));
+
+        if (isNotFoundError && attempt === maxRetries) {
+          // Try HTTP fallback on last attempt
+          logger.warn(`SDK failed to load account ${publicKey}, trying HTTP fallback...`);
+          try {
+            const horizonUrl = env.HORIZON_URL;
+            const accountUrl = `${horizonUrl}/accounts/${publicKey}`;
+            const response = await axios.get(accountUrl, { timeout: 10000 });
+            
+            if (response.status === 200 && response.data) {
+              const accountData = response.data;
+              const account = new StellarSdk.Account(publicKey, accountData.sequence);
+              // Manually attach balances from HTTP response
+              (account as any).balances = accountData.balances || [];
+              logger.info(`🔹 Account loaded via HTTP fallback: ${publicKey}`);
+              return account;
+            }
+          } catch (httpError: any) {
+            logger.error(`HTTP fallback also failed for account ${publicKey}: ${httpError?.message || String(httpError)}`);
+          }
+        }
+        
+        if (attempt === maxRetries) {
+          logger.error(`🔴 Failed to load account ${publicKey} after ${maxRetries} attempts`);
+          throw error;
+        }
+      }
+    }
+    
+    throw new Error(`Failed to load account ${publicKey}`);
+  }
+
   async establishTrustline(
     userSecret: string,
     assetCode: string,
@@ -31,23 +82,8 @@ class TokenService {
     const user = StellarSdk.Keypair.fromSecret(userSecret);
     const userPublicKey = user.publicKey();
     
-    // Retry logic for loading account (Horizon API can be flaky)
-    let account;
-    const maxRetries = 3;
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        if (attempt > 1) {
-          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-        }
-        account = await server.loadAccount(userPublicKey);
-        break;
-      } catch (loadError: any) {
-        if (attempt === maxRetries) {
-          logger.error(`❌ Failed to load account ${userPublicKey} after ${maxRetries} attempts`);
-          throw loadError;
-        }
-      }
-    }
+    // Load account with fallback mechanism
+    const account = await this.loadAccountWithFallback(userPublicKey);
 
     // Check if trustline already exists (case-insensitive)
     const assetCodeUpper = assetCode.toUpperCase();
@@ -56,7 +92,7 @@ class TokenService {
     );
 
     if (trustlineExists) {
-      logger.info(`ℹ️ Trustline for ${assetCode} already exists on ${userPublicKey}`);
+      logger.info(`🔹 Trustline for ${assetCode} already exists on ${userPublicKey}`);
       return { success: true };
     }
 
@@ -67,7 +103,7 @@ class TokenService {
         const fetchedFee = await server.fetchBaseFee();
         fee = fetchedFee.toString();
       } catch (feeError: any) {
-        logger.warn(`⚠️ Failed to fetch base fee, using default (0.01 Pi)`);
+        logger.warn(`🔴 Failed to fetch base fee, using default (0.01 Pi)`);
       }
 
       const tx = new StellarSdk.TransactionBuilder(account!, {
@@ -82,12 +118,12 @@ class TokenService {
       await server.submitTransaction(tx);
       
       logger.success(
-        `✅ Trustline established for ${asset.getCode()} on ${userPublicKey}`
+        `🔹 Trustline established for ${asset.getCode()} on ${userPublicKey}`
       );
       return { success: true };
     } catch (err: any) {
       logger.error(
-        `❌ Failed to establish trustline for asset ${assetCode} (issuer: ${issuer}) for user: ${userPublicKey}`
+        `🔴 Failed to establish trustline for asset ${assetCode} (issuer: ${issuer}) for user: ${userPublicKey}`
       );
       if (err.response?.data) {
         logger.error(`Error:`, err);
@@ -139,7 +175,7 @@ class TokenService {
       const result = await server.submitTransaction(tx);
 
       logger.success(
-        `✅ Home domain "${domain}" set successfully for issuer: ${issuer.publicKey()}`
+        `🔹 Home domain "${domain}" set successfully for issuer: ${issuer.publicKey()}`
       );
       return result;
     } catch (err: any) {
@@ -152,7 +188,7 @@ class TokenService {
       })();
 
       logger.error(
-        `❌ Failed to set home domain "${homeDomain}" for issuer: ${issuerPublicKey}`
+        `🔴 Failed to set home domain "${homeDomain}" for issuer: ${issuerPublicKey}`
       );
       if (err.response?.data) {
         logger.error(`Error:`, err);
@@ -171,7 +207,7 @@ class TokenService {
       const issuer = StellarSdk.Keypair.fromSecret(env.PLATFORM_ISSUER_SECRET);
       const issuerPublicKey = issuer.publicKey();
       const finalHomeDomain =
-        homeDomain || `https://www.zyrapay.net/${assetCode}`;
+        homeDomain || `https://www.zyradex.com/${assetCode}`;
 
       // Load issuer account
       let issuerAccount = await server.loadAccount(issuerPublicKey);
@@ -192,13 +228,13 @@ class TokenService {
                 break;
               } catch (reloadError: any) {
                 if (attempt === maxRetries) {
-                  logger.warn(`⚠️ Failed to reload issuer account after ${maxRetries} attempts, using original account`);
+                  logger.warn(`🔴 Failed to reload issuer account after ${maxRetries} attempts, using original account`);
                 }
               }
             }
           }
         } catch (homeDomainError: any) {
-          logger.warn(`⚠️ Failed to set home domain, continuing: ${homeDomainError.message}`);
+          logger.warn(`🔴 Failed to set home domain, continuing: ${homeDomainError.message}`);
         }
       }
 
@@ -214,29 +250,55 @@ class TokenService {
         issuerPublicKey
       );
 
+      // Load distributor account for fee payment
+      const distributorAccount = await this.loadAccountWithFallback(distributorPublicKey);
+
       // Create payment transaction
-      let fee: string = "100000"; // Default fee: 0.01 Pi
+      let fee: string = "100000"; // Default fee: 0.01 Pi (base fee for blockchain)
       try {
         const fetchedFee = await server.fetchBaseFee();
         fee = fetchedFee.toString();
       } catch (feeError: any) {
-        logger.warn(`⚠️ Failed to fetch base fee, using default (0.01 Pi)`);
+        logger.warn(`🔴 Failed to fetch base fee, using default (0.01 Pi)`);
       }
 
-      const tx = new StellarSdk.TransactionBuilder(issuerAccount, {
+      // Fee recipient is always configured (from env)
+      const feeRecipientPublicKey = env.PI_TEST_USER_PUBLIC_KEY;
+      // 100 Pi = 100 * 10,000,000 stroops = 1,000,000,000 stroops
+      const platformFeeAmount = "1000000000"; // 100 Pi in stroops
+
+      // Build transaction with distributor as source account (for fee payment)
+      const txBuilder = new StellarSdk.TransactionBuilder(distributorAccount, {
         fee,
         networkPassphrase: env.NETWORK,
-      })
-        .addOperation(
-          StellarSdk.Operation.payment({
-            destination: distributorPublicKey,
-            asset,
-            amount: totalSupply,
-          })
-        )
-        .setTimeout(60)
-        .build();
+      });
 
+      // Add platform fee payment (100 Pi) from distributor to fee recipient
+      txBuilder.addOperation(
+          StellarSdk.Operation.payment({
+            source: distributorPublicKey,
+            destination: feeRecipientPublicKey,
+            asset: StellarSdk.Asset.native(), // Native Pi
+            amount: platformFeeAmount,
+          })
+        );
+        logger.info(`� Adding platform fee: 100 Pi to ${feeRecipientPublicKey}`);
+      
+
+      // Add token payment from issuer to distributor
+      txBuilder.addOperation(
+        StellarSdk.Operation.payment({
+          source: issuerPublicKey,
+          destination: distributorPublicKey,
+          asset,
+          amount: totalSupply,
+        })
+      );
+
+      const tx = txBuilder.setTimeout(60).build();
+
+      // Sign with both distributor (for fee payment) and issuer (for token payment)
+      tx.sign(distributor);
       tx.sign(issuer);
 
       // Submit transaction (workaround for SDK v14 bug)
@@ -259,9 +321,9 @@ class TokenService {
           result_meta_xdr: response.data.result_meta_xdr,
         };
         
-        logger.success(`🚀 Token minted successfully - Hash: ${result.hash}`);
+        logger.success(`� Token minted successfully - Hash: ${result.hash}`);
       } catch (submitError: any) {
-        logger.error(`❌ Transaction submission failed`);
+        logger.error(`🔴 Transaction submission failed`);
         if (submitError.response?.data) {
           const errorData = submitError.response.data;
           if (errorData.extras?.result_codes) {
@@ -283,17 +345,16 @@ class TokenService {
         homeDomain: finalHomeDomain,
       });
 
-      logger.success(`✅ Token saved to database - ID: ${token._id}`);
+      logger.success(`🔹 Token saved to database - ID: ${token._id}`);
 
-      // Clear balance cache for distributor to reflect new token balance
-      // This ensures the user sees their new token balance immediately
+       
       this.accountService.clearBalanceCache(distributorPublicKey).catch((error) => {
         logger.warn(`Failed to clear balance cache after token mint: ${error instanceof Error ? error.message : String(error)}`);
       });
 
       return token;
     } catch (err: any) {
-      logger.error("❌ Error in mintToken");
+      logger.error("🔴 Error in mintToken");
       if (err.response?.data) {
         const errorData = err.response.data;
         if (errorData.extras?.result_codes) {
@@ -312,7 +373,7 @@ class TokenService {
       const tokens = await Token.find({});
       return tokens;
     } catch (err: any) {
-      logger.error("❌ Error in getTokens:", err);
+      logger.error("🔴 Error in getTokens:", err);
       throw err;
     }
   }
@@ -361,10 +422,10 @@ class TokenService {
 
       const result = await server.submitTransaction(tx);
 
-      logger.success(`✅ Burned ${amount} ${assetCode}. Transaction hash: ${result.hash}`);
+      logger.success(`🔹 Burned ${amount} ${assetCode}. Transaction hash: ${result.hash}`);
       return result;
     } catch (err: any) {
-      logger.error("❌ Error burning token:", err);
+      logger.error("🔴 Error burning token:", err);
       throw err;
     }
   }

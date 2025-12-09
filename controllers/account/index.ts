@@ -1,29 +1,33 @@
 import { Request, Response } from 'express';
 import { logger } from '../../utils/logger';
 import { AccountService } from '../../services/account.service';
+import WalletService from '../../services/wallet.service';
 
 const accountService = new AccountService();
+const walletService = new WalletService();
 
-export const importAccount = async (req: Request, res: Response) => {
+export const createWallet = async (req: Request, res: Response) => {
   try {
     const currentUser = (req as any).currentUser;
-    const { mnemonic, secret } = req.body || {};
 
     if (!currentUser) {
       return res.status(401).json({ message: 'Not authenticated' });
     }
 
-    const result = await accountService.importAccount({
-      mnemonic,
-      secret,
-      userId: currentUser._id.toString(),
-    });
+    const userId = currentUser._id.toString();
+    logger.info(`Creating new wallet for user ${userId}`);
 
-    return res.status(200).json(result);
+    const result = await walletService.generateAndLinkWallet(userId);
+
+    return res.status(200).json({
+      publicKey: result.publicKey,
+      secret: result.secretKey,
+      seedResult: result.seedResult,
+    });
   } catch (err: any) {
-    logger.error('❌ importAccount failed:', err);
-    const statusCode = err.message.includes('Invalid credentials') ? 400 : 500;
-    return res.status(statusCode).json({ message: err.message || 'Failed to import account', error: err.message });
+    logger.error('❌ createWallet failed:', err);
+    const statusCode = err.message.includes('User not found') || err.message.includes('PI_TEST_USER_SECRET_KEY') ? 400 : 500;
+    return res.status(statusCode).json({ message: err.message || 'Failed to create wallet', error: err.message });
   }
 };
 

@@ -18,38 +18,78 @@ class UsersService {
   }
 
   async signInUser(authResult: IAuthResult): Promise<IAuthResponse> {
+    // Always validate access token with Pi API and get user data from API response
+    let piApiUser: any;
+    
     try {
-      await platformAPIClient.get("/v2/me", {
+      if (!authResult.accessToken || authResult.accessToken.trim() === '') {
+        logger.error('Empty or missing access token provided');
+        throw new Error("Invalid access token: token is empty");
+      }
+
+      // Validate token and get user data from Pi API
+      const response = await platformAPIClient.get("/v2/me", {
         headers: { Authorization: `Bearer ${authResult.accessToken}` },
       });
 
-      logger.info(`✅ Pi API authentication successful for user: ${authResult.user.username}`);
+      // Use user data from Pi API response, not from frontend
+      piApiUser = response.data;
+      
+      if (!piApiUser || !piApiUser.username) {
+        logger.error('Pi API response missing user data');
+        throw new Error("Invalid response from Pi API: missing user data");
+      }
 
-    } catch (error) {
-      throw new Error("Invalid access token");
+      logger.info(`✅ Pi API authentication successful for user: ${piApiUser.username}`);
+
+    } catch (error: any) {
+      // Log more details about the error for debugging
+      const errorMessage = error?.response?.data?.message || error?.message || 'Unknown error';
+      const statusCode = error?.response?.status || error?.status;
+      
+      logger.error(`Pi API authentication failed: ${errorMessage} (Status: ${statusCode})`);
+      logger.error(`Access token (first 20 chars): ${authResult.accessToken?.substring(0, 20)}...`);
+      
+      // Provide more specific error message
+      if (statusCode === 401 || statusCode === 403) {
+        throw new Error("Invalid or expired access token. Please re-authenticate with Pi Network.");
+      } else if (statusCode === 500) {
+        throw new Error("Pi Network API error. Please try again later.");
+      } else {
+        throw new Error(`Authentication failed: ${errorMessage}`);
+      }
     }
 
     try {
-      let user = await User.findOne({ username: authResult.user.username });
+      // Use validated user data from Pi API, with fallback to frontend data
+      const validatedUsername = piApiUser.username || authResult.user.username;
+      const validatedUid = piApiUser.uid || authResult.user.uid;
+
+      if (!validatedUsername) {
+        throw new Error("Unable to determine username from Pi API response");
+      }
+
+      // Always validate user exists or create new one
+      let user = await User.findOne({ username: validatedUsername });
       if (!user) {
-        // User doesn't exist, create new user
+        // User doesn't exist, create new user with validated data
         user = new User({
-          uid: authResult.user.uid,
-          username: authResult.user.username,
-          public_key: "",
+          uid: validatedUid,
+          username: validatedUsername,
+          // public_key is optional and will be undefined by default
           tokens: [],
           liquidityPools: [],
           role: "user",
           verified: false,
         });
         await user.save();
-        logger.info(`New user created: ${authResult.user.username}`);
+        logger.info(`New user created: ${validatedUsername}`);
       } else {
-        // User exists, update uid if it changed
-        if (user.uid !== authResult.user.uid) {
-          user.uid = authResult.user.uid;
+        // User exists, always update uid from validated Pi API data
+        if (validatedUid && user.uid !== validatedUid) {
+          user.uid = validatedUid;
           await user.save();
-          logger.info(`User uid updated: ${authResult.user.username}`);
+          logger.info(`User uid updated: ${validatedUsername}`);
         }
       }
 
@@ -89,8 +129,8 @@ class UsersService {
         throw new Error('User not found');
       }
 
-      // Remove public_key from user
-      user.public_key = "";
+      // Remove public_key from user (set to undefined to work with sparse unique index)
+      user.public_key = undefined;
       await user.save();
       logger.info(`Public key removed for user ${userId}`);
     } catch (error) {

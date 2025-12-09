@@ -1,7 +1,6 @@
 import mongoose from 'mongoose';
 import env from '../config/env';
 import { logger } from '../utils/logger';
-import Passkey from '../models/Passkey';
 import User from '../models/User';
 
 /**
@@ -18,15 +17,6 @@ export const initializeDatabase = async () => {
     // Connect to MongoDB
     await mongoose.connect(mongoURI);
     logger.info('Connected to MongoDB for initialization');
-
-    // Ensure Passkey collection exists and indexes are created
-    const passkeyCollection = mongoose.connection.collection('passkeys');
-    const passkeyIndexes = await passkeyCollection.indexes();
-    logger.info(`Passkey collection indexes: ${passkeyIndexes.length} found`);
-
-    // Create indexes if they don't exist (Mongoose will handle this automatically, but we verify)
-    await Passkey.createIndexes();
-    logger.success('Passkey indexes created/verified');
 
     // Verify User collection has public_key field
     const userCollection = mongoose.connection.collection('users');
