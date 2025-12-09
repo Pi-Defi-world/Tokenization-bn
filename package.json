@@ -7,8 +7,7 @@
     "dev": "nodemon server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "init-db": "ts-node scripts/init-db.ts",
-    "cleanup-wallets": "ts-node scripts/cleanup-old-wallet-data.ts"
+    "init-db": "ts-node scripts/init-db.ts"
   },
   "keywords": [],
   "author": "",
