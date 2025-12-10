@@ -321,6 +321,12 @@ class SwapService {
         }
       }
 
+      // Calculate platform fee (0.3% of input amount)
+      const platformFeePercent = parseFloat(env.PLATFORM_SWAP_FEE_PERCENT) / 100;
+      const platformFeeAmount = (input * platformFeePercent).toFixed(7);
+      const poolFeePercent = pool.fee_bp / 100;
+      const totalFeePercent = poolFeePercent + platformFeePercent;
+      
       logger.info(
         ` Quote result: expect ≈ ${outputAmount.toFixed(7)} ${to.code}, min after slippage: ${minOut}${availableBalance !== null ? `, available: ${availableBalance.toFixed(7)}` : ''}`
       );
@@ -331,7 +337,10 @@ class SwapService {
         expectedOutput: outputAmount.toFixed(7),
         minOut,
         slippagePercent,
-        fee: pool.fee_bp / 100,
+        fee: pool.fee_bp / 100, // Pool fee percentage (for backward compatibility)
+        platformFee: platformFeePercent, // Platform fee percentage (0.3%)
+        platformFeeAmount, // Platform fee amount in input token
+        totalFee: totalFeePercent, // Total fee percentage (pool + platform)
         availableBalance: availableBalance !== null ? availableBalance.toFixed(7) : null,
         isSufficient,
         balanceError,

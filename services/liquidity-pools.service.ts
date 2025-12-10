@@ -1491,7 +1491,7 @@ export class PoolService {
   public async quoteAddLiquidity(
     poolId: string,
     amountA: string
-  ): Promise<{ amountA: string; amountB: string; poolRatio: number; assetA: string; assetB: string }> {
+  ): Promise<{ amountA: string; amountB: string; poolRatio: number; assetA: string; assetB: string; platformFee: string; baseFee: string; totalFee: string }> {
     try {
       const pool = await this.getLiquidityPoolById(poolId);
       
@@ -1514,12 +1514,26 @@ export class PoolService {
       const assetA = resA.asset === 'native' ? 'native' : (resA.asset.split(':')[0] || 'unknown');
       const assetB = resB.asset === 'native' ? 'native' : (resB.asset.split(':')[0] || 'unknown');
       
+      // Calculate fees
+      const platformFee = env.PLATFORM_POOL_FEE; // Fixed fee in Test Pi
+      let baseFee = "0.01"; // Default base fee
+      try {
+        const fetchedFee = await server.fetchBaseFee();
+        baseFee = (parseFloat(fetchedFee.toString()) / 10000000).toFixed(7); // Convert stroops to Pi
+      } catch (feeError: any) {
+        // Use default if fetch fails
+      }
+      const totalFee = (parseFloat(platformFee) + parseFloat(baseFee)).toFixed(7);
+      
       return {
         amountA,
         amountB,
         poolRatio,
         assetA,
         assetB,
+        platformFee,
+        baseFee,
+        totalFee,
       };
     } catch (err: any) {
       logger.error('Error calculating add liquidity quote:', err);
