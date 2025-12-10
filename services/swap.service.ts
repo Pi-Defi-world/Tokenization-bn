@@ -393,8 +393,7 @@ class SwapService {
 
       if (actualToCode !== 'native') {
         await this.ensureTrustline(userSecret, actualToCode, actualToIssuer);
-        // Wait longer after trustline creation to ensure Horizon has updated
-        await new Promise(resolve => setTimeout(resolve, 2000)); // Increased to 2 seconds
+        await new Promise(resolve => setTimeout(resolve, 2000));  
       }
 
       // Collect platform fee before swap
@@ -466,7 +465,7 @@ class SwapService {
                   const seqNum = BigInt(httpSequence);
                   const initSeq = BigInt(initialSequence);
                   if (seqNum <= initSeq) {
-                    logger.error(`❌ CRITICAL: Sequence number from HTTP fallback is not updated (${httpSequence} <= ${initialSequence}). Trustline transaction may not have propagated.`);
+                    logger.error(`CRITICAL: Sequence number from HTTP fallback is not updated (${httpSequence} <= ${initialSequence}). Trustline transaction may not have propagated.`);
                     throw new Error(`Account sequence not updated after trustline creation. Please wait a few seconds and try again.`);
                   }
                 }
