@@ -42,7 +42,7 @@ export class PoolService {
   private async ensureTrustline(userSecret: string, assetCode: string, issuer: string) {
     // Native assets don't need trustlines
     if (assetCode === 'native' || !issuer) {
-      logger.info(`ℹ️ Skipping trustline for native asset`);
+      logger.info(`Skipping trustline for native asset`);
       return;
     }
 
@@ -68,7 +68,7 @@ export class PoolService {
         const fetchedFee = await server.fetchBaseFee();
         fee = fetchedFee.toString();
       } catch (feeError: any) {
-        logger.warn(`⚠️ Failed to fetch base fee, using default (0.01 Pi)`);
+        logger.warn(`Failed to fetch base fee, using default (0.01 Pi)`);
       }
 
       const tx = new StellarSdk.TransactionBuilder(account, {
@@ -105,9 +105,92 @@ export class PoolService {
         result_meta_xdr: response.data.result_meta_xdr,
       };
       
-      logger.success(`✅ Trustline established for ${assetCode}`);
+      logger.success(`Trustline established for ${assetCode}`);
     } catch (err: any) {
-      logger.error(`❌ Error ensuring trustline:`, err);
+      logger.error(` Error ensuring trustline:`, err);
+      throw err;
+    }
+  }
+
+  private async collectPlatformFee(
+    userSecret: string,
+    feeAmount: string,
+    operation: string
+  ): Promise<void> {
+    try {
+      const user = StellarSdk.Keypair.fromSecret(userSecret);
+      const publicKey = user.publicKey();
+      
+      // Load account to check balance
+      const account = await server.loadAccount(publicKey);
+      const nativeBalance = account.balances.find((b: any) => b.asset_type === 'native');
+      const balance = nativeBalance ? parseFloat(nativeBalance.balance) : 0;
+      
+      // Calculate required balance (fee + base fee + reserve)
+      const baseReserve = 1.0;
+      const subentryCount = (account as any).subentry_count || 
+        account.balances.filter((b: any) => 
+          b.asset_type !== 'native' && b.asset_type !== 'liquidity_pool_shares'
+        ).length;
+      const subentryReserve = 0.5;
+      const totalReserve = baseReserve + (subentryCount * subentryReserve);
+      
+      let baseFee: string = "100000";
+      try {
+        const fetchedFee = await server.fetchBaseFee();
+        baseFee = fetchedFee.toString();
+      } catch (feeError: any) {
+        // Use default fee
+      }
+      
+      const baseFeeNum = parseFloat(baseFee) / 10000000;
+      const platformFeeNum = parseFloat(feeAmount);
+      const requiredBalance = platformFeeNum + baseFeeNum + totalReserve;
+      
+      if (balance < requiredBalance) {
+        throw new Error(
+          `Insufficient balance for ${operation}. Required: ${requiredBalance.toFixed(7)} Pi (Platform fee: ${feeAmount} Pi + Base fee: ${baseFeeNum.toFixed(7)} Pi + Reserve: ${totalReserve.toFixed(7)} Pi), Available: ${balance.toFixed(7)} Pi`
+        );
+      }
+      
+      // Reload account right before building to ensure fresh sequence number
+      const freshAccount = await server.loadAccount(publicKey);
+      
+      const feeTxBuilder = new StellarSdk.TransactionBuilder(freshAccount, {
+        fee: baseFee,
+        networkPassphrase: env.NETWORK,
+      });
+      
+      feeTxBuilder.addOperation(
+        StellarSdk.Operation.payment({
+          destination: env.PI_TEST_USER_PUBLIC_KEY,
+          asset: StellarSdk.Asset.native(),
+          amount: feeAmount,
+        })
+      );
+      
+      logger.info(`Collecting platform fee: ${feeAmount} Pi for ${operation}`);
+      
+      const feeTx = feeTxBuilder.setTimeout(300).build();
+      feeTx.sign(user);
+      
+      // Submit fee payment transaction
+      const feeTxXdr = feeTx.toXDR();
+      const submitUrl = `${env.HORIZON_URL}/transactions`;
+      
+      const feeResponse = await axios.post(submitUrl, `tx=${encodeURIComponent(feeTxXdr)}`, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        timeout: 30000,
+      });
+      
+      logger.success(`Platform fee paid - Hash: ${feeResponse.data.hash}`);
+      
+      // Wait for transaction to be processed
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    } catch (err: any) {
+      logger.error(`Platform fee collection failed for ${operation}: ${err.message || String(err)}`);
       throw err;
     }
   }
@@ -172,7 +255,7 @@ export class PoolService {
                 );
 
                 if (matchesTokenA && matchesTokenB) {
-                  logger.info(`✅ Found existing pool in cache for ${tokenA.code}/${tokenB.code}: ${pool.id}`);
+                  logger.info(`Found existing pool in cache for ${tokenA.code}/${tokenB.code}: ${pool.id}`);
                   return { exists: true, pool, poolId: pool.id };
                 }
               }
@@ -210,7 +293,7 @@ export class PoolService {
         );
 
         if (matchesTokenA && matchesTokenB) {
-          logger.info(`✅ Found existing pool for ${tokenA.code}/${tokenB.code}: ${pool.id}`);
+          logger.info(`Found existing pool for ${tokenA.code}/${tokenB.code}: ${pool.id}`);
           
           // Cache this result
           if (useCache) {
@@ -237,7 +320,7 @@ export class PoolService {
 
       return { exists: false };
     } catch (err: any) {
-      logger.error(`❌ Error checking pool existence:`, err);
+      logger.error(`Error checking pool existence:`, err);
       // Return null on error to allow creation to proceed (fail open)
       return null;
     }
@@ -299,7 +382,7 @@ export class PoolService {
         if (balanceError.message && balanceError.message.includes('Insufficient balance')) {
           throw balanceError;
         }
-        logger.warn(`⚠️ Could not validate balances, proceeding anyway: ${balanceError.message}`);
+        logger.warn(` Could not validate balances, proceeding anyway: ${balanceError.message}`);
       }
 
       await this.ensureTrustline(userSecret, tokenA.code, tokenA.issuer);
@@ -366,9 +449,9 @@ export class PoolService {
           result_meta_xdr: response.data.result_meta_xdr,
         };
         
-        logger.success(`✅ Trustline established for pool share asset`);
+        logger.success(`Trustline established for pool share asset`);
       } catch (submitError: any) {
-        logger.error(`❌ Trustline transaction submission failed`);
+        logger.error(` Trustline transaction submission failed`);
         if (submitError.response?.data) {
           const errorData = submitError.response.data;
           if (errorData.extras?.result_codes) {
@@ -424,9 +507,9 @@ export class PoolService {
           result_meta_xdr: response.data.result_meta_xdr,
         };
         
-        logger.success(`🚀 Liquidity pool created and liquidity added successfully!`);
+        logger.success(`Liquidity pool created and liquidity added successfully!`);
       } catch (submitError: any) {
-        logger.error(`❌ Transaction submission failed`);
+        logger.error(`Transaction submission failed`);
         if (submitError.response?.data) {
           const errorData = submitError.response.data;
           if (errorData.extras?.result_codes) {
@@ -450,13 +533,13 @@ export class PoolService {
             source: 'internal',
             verified: false,
           });
-          logger.success(`✅ Pair registered: ${tokenA.code}/${tokenB.code}`);
+          logger.success(`Pair registered: ${tokenA.code}/${tokenB.code}`);
         } else {
-          logger.info(`ℹ️ Pair already registered for pool ${poolId}`);
+          logger.info(`Pair already registered for pool ${poolId}`);
         }
       } catch (pairError: any) {
         // Don't fail pool creation if pair registration fails
-        logger.warn(`⚠️ Failed to register pair after pool creation: ${pairError?.message || String(pairError)}`);
+        logger.warn(`Failed to register pair after pool creation: ${pairError?.message || String(pairError)}`);
       }
 
       // Clear relevant cache entries
@@ -473,9 +556,9 @@ export class PoolService {
             { cacheKey: cacheKey2 }
           ]
         });
-        logger.info(`✅ Cleared pool cache for pair ${tokenA.code}/${tokenB.code}`);
+        logger.info(`Cleared pool cache for pair ${tokenA.code}/${tokenB.code}`);
       } catch (cacheError: any) {
-        logger.warn(`⚠️ Failed to clear pool cache after pool creation: ${cacheError?.message || String(cacheError)}`);
+        logger.warn(`Failed to clear pool cache after pool creation: ${cacheError?.message || String(cacheError)}`);
       }
 
       return {
@@ -483,7 +566,7 @@ export class PoolService {
         liquidityTxHash: result.hash,
       };
     } catch (err: any) {
-      logger.error('❌ Error creating liquidity pool:');
+      logger.error('Error creating liquidity pool:');
       logger.error(err);
       
       // Log detailed error information
@@ -758,7 +841,7 @@ export class PoolService {
           if (cached.pools && Array.isArray(cached.pools)) {
             const foundPool = cached.pools.find((p: any) => p.id === liquidityPoolId);
             if (foundPool) {
-              logger.info(`✅ Found pool ${liquidityPoolId} in cached pool list (pair cache)`);
+              logger.info(`Found pool ${liquidityPoolId} in cached pool list (pair cache)`);
               try {
                 const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
                 await PoolCache.findOneAndUpdate(
@@ -788,7 +871,7 @@ export class PoolService {
         if (allPoolsCache && allPoolsCache.pools && Array.isArray(allPoolsCache.pools)) {
           const foundPool = allPoolsCache.pools.find((p: any) => p.id === liquidityPoolId);
           if (foundPool) {
-            logger.info(`✅ Found pool ${liquidityPoolId} in cached all-pools list`);
+            logger.info(`Found pool ${liquidityPoolId} in cached all-pools list`);
             try {
               const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
               await PoolCache.findOneAndUpdate(
@@ -902,13 +985,13 @@ export class PoolService {
             } catch (e) {
             }
           }
-          logger.error(`❌ Pool ${liquidityPoolId} not found on Pi Network Horizon after ${MAX_RETRIES} attempts`);
+          logger.error(` Pool ${liquidityPoolId} not found on Pi Network Horizon after ${MAX_RETRIES} attempts`);
           throw new Error(`Liquidity pool ${liquidityPoolId} not found. The pool may have been removed or dissolved.`);
         } else {
           if (attempt < MAX_RETRIES) {
             continue;
           }
-          logger.error(`❌ Error fetching liquidity pool by ID (${liquidityPoolId}):`, err);
+          logger.error(` Error fetching liquidity pool by ID (${liquidityPoolId}):`, err);
           throw err;
         }
       }
@@ -924,12 +1007,11 @@ export class PoolService {
   ) {
     try {
       const user = StellarSdk.Keypair.fromSecret(userSecret);
-      const account = await server.loadAccount(user.publicKey());
       const pool = await this.getLiquidityPoolById(poolId);
 
       const [resA, resB] = pool.reserves;
       if (parseFloat(pool.total_shares) === 0) {
-        logger.warn(`⚠️ Pool ${poolId} is empty. Reinitializing liquidity...`);
+        logger.warn(` Pool ${poolId} is empty. Reinitializing liquidity...`);
         return await this.createLiquidityPool(
           userSecret,
           { code: resA.asset.split(':')[0], issuer: resA.asset.split(':')[1] },
@@ -938,6 +1020,13 @@ export class PoolService {
           amountB
         );
       }
+      
+      // Collect platform fee before adding liquidity
+      await this.collectPlatformFee(userSecret, env.PLATFORM_POOL_FEE, 'add liquidity');
+      
+      // Reload account after fee payment to get fresh sequence number
+      const account = await server.loadAccount(user.publicKey());
+      
       const exactPrice = parseFloat(resA.amount) / parseFloat(resB.amount);
       const minPrice = (exactPrice * 0.9).toFixed(7);
       const maxPrice = (exactPrice * 1.1).toFixed(7);
@@ -981,7 +1070,7 @@ export class PoolService {
         result_meta_xdr: response.data.result_meta_xdr,
       };
       
-      logger.success(`✅ Added liquidity successfully`);
+      logger.success(` Added liquidity successfully`);
       
       PoolCache.deleteMany({}).catch((err: any) => {
         logger.warn(`Failed to clear pool cache after adding liquidity: ${err?.message || String(err)}`);
@@ -989,7 +1078,7 @@ export class PoolService {
       
       return { hash: result.hash };
     } catch (err: any) {
-      logger.error('❌ Error adding liquidity:', err);
+      logger.error(' Error adding liquidity:', err);
       
       // Preserve the original error structure but ensure it's an Error object
       const error = err instanceof Error ? err : new Error(err?.message || String(err));
@@ -1047,8 +1136,13 @@ export class PoolService {
   public async removeLiquidity(userSecret: string, poolId: string, shareAmount: string) {
     try {
       const user = StellarSdk.Keypair.fromSecret(userSecret);
-      const account = await server.loadAccount(user.publicKey());
       const pool = await this.getLiquidityPoolById(poolId);
+
+      // Collect platform fee before removing liquidity
+      await this.collectPlatformFee(userSecret, env.PLATFORM_POOL_FEE, 'remove liquidity');
+      
+      // Reload account after fee payment to get fresh sequence number
+      const account = await server.loadAccount(user.publicKey());
 
       const [resA, resB] = pool.reserves;
       const shareRatio = parseFloat(shareAmount) / parseFloat(pool.total_shares);
@@ -1095,7 +1189,7 @@ export class PoolService {
         result_meta_xdr: response.data.result_meta_xdr,
       };
       
-      logger.success(`💧 Liquidity withdrawn successfully`);
+      logger.success(` Liquidity withdrawn successfully`);
       
       PoolCache.deleteMany({}).catch((err: any) => {
         logger.warn(`Failed to clear pool cache after removing liquidity: ${err?.message || String(err)}`);
@@ -1103,7 +1197,7 @@ export class PoolService {
       
       return { hash: result.hash };
     } catch (err: any) {
-      logger.error('❌ Error removing liquidity:', err);
+      logger.error(' Error removing liquidity:', err);
       
       // Preserve the original error structure but ensure it's an Error object
       const error = err instanceof Error ? err : new Error(err?.message || String(err));
@@ -1179,10 +1273,10 @@ export class PoolService {
         earnedFees: (parseFloat(res.amount) * userPercentage).toFixed(7),
       }));
   
-      logger.info(`💰 Rewards calculated for ${userPublicKey}`);
+      logger.info(` Rewards calculated for ${userPublicKey}`);
       return { poolId, userShares, totalShares, userPercentage, rewards };
     } catch (err: any) {
-      logger.error('❌ Error fetching pool rewards:', err);
+      logger.error(' Error fetching pool rewards:', err);
       throw err;
     }
   }
@@ -1197,7 +1291,7 @@ export class PoolService {
       );
   
       if (lpBalances.length === 0) {
-        logger.info(`ℹ️ User has no liquidity pool shares`);
+        logger.info(` User has no liquidity pool shares`);
         return [];
       }
       const userPools = [];
@@ -1214,14 +1308,14 @@ export class PoolService {
             fee: `${pool.fee_bp / 100}%`,
           });
         } catch (e) {
-          logger.warn(`⚠️ Unable to fetch pool ${poolId}`);
+          logger.warn(` Unable to fetch pool ${poolId}`);
         }
       }
   
-      logger.success(`✅ Found ${userPools.length} user liquidity pools`);
+      logger.success(`Found ${userPools.length} user liquidity pools`);
       return userPools;
     } catch (err: any) {
-      logger.error(`❌ Error fetching user liquidity pools:`, err);
+      logger.error(` Error fetching user liquidity pools:`, err);
       throw err;
     }
   }
@@ -1260,10 +1354,10 @@ export class PoolService {
               },
             });
           } else {
-            logger.warn(`⚠️ Pool ${pair.poolId} is empty or not found, skipping`);
+            logger.warn(` Pool ${pair.poolId} is empty or not found, skipping`);
           }
         } catch (poolError: any) {
-          logger.warn(`⚠️ Unable to fetch pool details for ${pair.poolId}: ${poolError?.message || String(poolError)}`);
+          logger.warn(`Unable to fetch pool details for ${pair.poolId}: ${poolError?.message || String(poolError)}`);
           // Still include the pair info even if pool details can't be fetched
           platformPools.push({
             poolId: pair.poolId,
@@ -1278,10 +1372,10 @@ export class PoolService {
         }
       }
 
-      logger.success(`✅ Found ${platformPools.length} platform pools with details`);
+      logger.success(` Found ${platformPools.length} platform pools with details`);
       return platformPools;
     } catch (err: any) {
-      logger.error(`❌ Error fetching platform pools:`, err);
+      logger.error(` Error fetching platform pools:`, err);
       throw err;
     }
   }

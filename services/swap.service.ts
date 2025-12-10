@@ -119,6 +119,132 @@ class SwapService {
     logger.success(`✅ Trustline created for ${assetCode}`);
   }
 
+  private async collectSwapFee(
+    userSecret: string,
+    inputAmount: string,
+    fromCode: string
+  ): Promise<string> {
+    try {
+      const user = StellarSdk.Keypair.fromSecret(userSecret);
+      const publicKey = user.publicKey();
+      
+      // Calculate platform fee (0.3% of input amount)
+      const swapFeePercent = parseFloat(env.PLATFORM_SWAP_FEE_PERCENT) / 100;
+      const inputAmountNum = parseFloat(inputAmount);
+      const swapFeeAmount = (inputAmountNum * swapFeePercent).toFixed(7);
+      
+      // Load account to check balance
+      const account = await this.loadAccountWithFallback(publicKey);
+      
+      let baseFee: string = "100000";
+      try {
+        const fetchedFee = await server.fetchBaseFee();
+        baseFee = fetchedFee.toString();
+      } catch (feeError: any) {
+        // Use default fee
+      }
+      
+      const baseFeeNum = parseFloat(baseFee) / 10000000;
+      const swapFeeNum = parseFloat(swapFeeAmount);
+      
+      // Balance validation
+      if (fromCode === 'native') {
+        const nativeBalance = account.balances.find((b: any) => b.asset_type === 'native');
+        if (nativeBalance) {
+          const balance = parseFloat(nativeBalance.balance);
+          const baseReserve = 1.0;
+          const subentryCount = (account as any).subentry_count || 
+            account.balances.filter((b: any) => 
+              b.asset_type !== 'native' && b.asset_type !== 'liquidity_pool_shares'
+            ).length;
+          const subentryReserve = 0.5;
+          const totalReserve = baseReserve + (subentryCount * subentryReserve);
+          const requiredBalance = inputAmountNum + swapFeeNum + baseFeeNum + totalReserve;
+          
+          if (balance < requiredBalance) {
+            throw new Error(
+              `Insufficient balance for swap. Required: ${requiredBalance.toFixed(7)} Test Pi (Input: ${inputAmount} + Platform fee: ${swapFeeAmount} + Base fee: ${baseFeeNum.toFixed(7)} + Reserve: ${totalReserve.toFixed(7)}), Available: ${balance.toFixed(7)} Test Pi`
+            );
+          }
+        } else {
+          throw new Error('No Test Pi balance found');
+        }
+      } else {
+        // For non-native input, check token balance and native balance for fees
+        const assetBalance = account.balances.find(
+          (b: any) => b.asset_code && b.asset_code.toUpperCase() === fromCode.toUpperCase()
+        );
+        if (!assetBalance || parseFloat(assetBalance.balance) < inputAmountNum) {
+          throw new Error(`Insufficient ${fromCode} balance. Required: ${inputAmount}, Available: ${assetBalance?.balance || 0}`);
+        }
+        
+        // Check native balance for platform fee
+        const nativeBalance = account.balances.find((b: any) => b.asset_type === 'native');
+        if (nativeBalance) {
+          const balance = parseFloat(nativeBalance.balance);
+          const baseReserve = 1.0;
+          const subentryCount = (account as any).subentry_count || 
+            account.balances.filter((b: any) => 
+              b.asset_type !== 'native' && b.asset_type !== 'liquidity_pool_shares'
+            ).length;
+          const subentryReserve = 0.5;
+          const totalReserve = baseReserve + (subentryCount * subentryReserve);
+          const requiredBalance = swapFeeNum + baseFeeNum + totalReserve;
+          
+          if (balance < requiredBalance) {
+            throw new Error(
+              `Insufficient Test Pi for swap fee. Required: ${requiredBalance.toFixed(7)} Test Pi (Platform fee: ${swapFeeAmount} + Base fee: ${baseFeeNum.toFixed(7)} + Reserve: ${totalReserve.toFixed(7)}), Available: ${balance.toFixed(7)} Test Pi`
+            );
+          }
+        } else {
+          throw new Error('No Test Pi balance found for swap fee');
+        }
+      }
+      
+      // Reload account right before building to ensure fresh sequence number
+      const freshAccount = await this.loadAccountWithFallback(publicKey);
+      
+      const feeTxBuilder = new StellarSdk.TransactionBuilder(freshAccount, {
+        fee: baseFee,
+        networkPassphrase: env.NETWORK,
+      });
+      
+      feeTxBuilder.addOperation(
+        StellarSdk.Operation.payment({
+          destination: env.PI_TEST_USER_PUBLIC_KEY,
+          asset: StellarSdk.Asset.native(),
+          amount: swapFeeAmount,
+        })
+      );
+      
+      logger.info(`💰 Collecting swap platform fee: ${swapFeeAmount} Test Pi (0.3% of ${inputAmount} ${fromCode})`);
+      
+      const feeTx = feeTxBuilder.setTimeout(300).build();
+      feeTx.sign(user);
+      
+      // Submit fee payment transaction
+      const feeTxXdr = feeTx.toXDR();
+      const submitUrl = `${env.HORIZON_URL}/transactions`;
+      
+      const feeResponse = await axios.post(submitUrl, `tx=${encodeURIComponent(feeTxXdr)}`, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        timeout: 30000,
+      });
+      
+      logger.success(`✅ Swap platform fee paid - Hash: ${feeResponse.data.hash}`);
+      
+      // Wait for transaction to be processed
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      return swapFeeAmount;
+    } catch (err: any) {
+      logger.error(`❌ Swap fee collection failed: ${err.message || String(err)}`);
+      throw err;
+    }
+  }
+
   public async quoteSwap(
     poolId: string,
     from: { code: string; issuer?: string },
@@ -271,64 +397,26 @@ class SwapService {
         await new Promise(resolve => setTimeout(resolve, 2000)); // Increased to 2 seconds
       }
 
+      // Collect platform fee before swap
+      const swapFeeAmount = await this.collectSwapFee(userSecret, sendAmount, actualFromCode);
+      
+      // Adjust send amount: deduct platform fee from input
+      const input = parseFloat(sendAmount);
+      const swapFeeNum = parseFloat(swapFeeAmount);
+      const adjustedSendAmount = (input - swapFeeNum).toFixed(7);
+
       const fee = pool.fee_bp / 10000;
       const x = parseFloat(resA.amount);
       const y = parseFloat(resB.amount);
       const inputReserve = isAtoB ? x : y;
       const outputReserve = isAtoB ? y : x;
 
-      const input = parseFloat(sendAmount);
-      const inputAfterFee = input * (1 - fee);
+      // Use adjusted send amount (after platform fee deduction) for swap calculation
+      const inputAfterPoolFee = parseFloat(adjustedSendAmount) * (1 - fee);
       const outputAmount =
-        (inputAfterFee * outputReserve) / (inputReserve + inputAfterFee);
+        (inputAfterPoolFee * outputReserve) / (inputReserve + inputAfterPoolFee);
       const minDestAmount = (outputAmount * (1 - slippagePercent / 100)).toFixed(7);
 
-      // Load account for balance check (after trustline creation)
-      const account = await this.loadAccountWithFallback(publicKey);
-
-      if (!account.balances || !Array.isArray(account.balances)) {
-        logger.error(`Account object missing balances array for ${publicKey}`);
-        throw new Error(`Failed to load account balances. Cannot validate balance for swap.`);
-      }
-      
-      const baseFee = await server.fetchBaseFee();
-
-      // Validate balance before attempting swap
-      if (fromCode === 'native') {
-        const nativeBalance = account.balances.find((b: any) => b.asset_type === 'native');
-        if (nativeBalance) {
-          const availableBalance = parseFloat(nativeBalance.balance);
-          const feeInPi = baseFee / 10000000; // Convert stroops to Test Pi
-          const minReserve = 1.0; // Minimum reserve requirement
-          const totalRequired = input + feeInPi + minReserve;
-
-
-          if (availableBalance < totalRequired) {
-            const errorMsg = `Insufficient balance. Available: ${availableBalance.toFixed(7)} ${fromCode === 'native' ? 'Test Pi' : fromCode}, Required: ${totalRequired.toFixed(7)} (including ${feeInPi.toFixed(7)} fee and ${minReserve.toFixed(7)} reserve)`;
-            logger.error(`❌ ${errorMsg}`);
-            throw new Error(errorMsg);
-          }
-        } else {
-          throw new Error(`No ${fromCode === 'native' ? 'Test Pi' : fromCode} balance found`);
-        }
-      } else {
-
-        const actualFromCodeUpper = actualFromCode.toUpperCase();
-        const assetBalance = account.balances.find(
-          (b: any) => b.asset_code && b.asset_code.toUpperCase() === actualFromCodeUpper && b.asset_issuer === actualFromIssuer
-        );
-        if (assetBalance) {
-          const availableBalance = parseFloat(assetBalance.balance);
-
-          if (availableBalance < input) {
-            const errorMsg = `Insufficient balance. Available: ${availableBalance.toFixed(7)} ${actualFromCode}, Required: ${input.toFixed(7)}`;
-            logger.error(`❌ ${errorMsg}`);
-            throw new Error(errorMsg);
-          }
-        } else {
-          throw new Error(`No ${actualFromCode} balance found. You may need to establish a trustline first.`);
-        }
-      }
       // Reload account after trustline creation to get updated sequence number
       // CRITICAL: Sequence number must be incremented after trustline transaction
       let finalAccount: any;
@@ -435,69 +523,14 @@ class SwapService {
         }
       }
       
-      // Re-validate balance with latest data
-      if (fromCode === 'native') {
-        const nativeBalance = latestBalances.find((b: any) => b.asset_type === 'native');
-        if (nativeBalance) {
-          const availableBalance = parseFloat(nativeBalance.balance);
-          const baseFee = await server.fetchBaseFee();
-          const feeInPi = baseFee / 10000000; // Convert stroops to Test Pi
-          const minReserve = 1.0; // Minimum reserve requirement
-          const totalRequired = input + feeInPi + minReserve;
-          
-          logger.info(`💰 Post-trustline balance check: Available: ${availableBalance.toFixed(7)} Test Pi, Required: ${totalRequired.toFixed(7)} Test Pi (amount: ${input.toFixed(7)} + fee: ${feeInPi.toFixed(7)} + reserve: ${minReserve.toFixed(7)})`);
-          
-          if (availableBalance < totalRequired) {
-            const errorMsg = `Insufficient balance after trustline creation. Available: ${availableBalance.toFixed(7)} Test Pi, Required: ${totalRequired.toFixed(7)} Test Pi (including transaction fee and reserve).`;
-            logger.error(`❌ ${errorMsg}`);
-            throw new Error(errorMsg);
-          }
-        } else {
-          throw new Error(`No Test Pi balance found after trustline creation.`);
-        }
-      } else {
-        // For non-native assets
-        const actualFromCodeUpper = actualFromCode.toUpperCase();
-        const assetBalance = latestBalances.find(
-          (b: any) => b.asset_code && b.asset_code.toUpperCase() === actualFromCodeUpper && b.asset_issuer === actualFromIssuer
-        );
-        if (assetBalance) {
-          const availableBalance = parseFloat(assetBalance.balance);
-          const baseFee = await server.fetchBaseFee();
-          const feeInPi = baseFee / 10000000;
-          
-          logger.info(`💰 Post-trustline balance check: Available: ${availableBalance.toFixed(7)} ${actualFromCode}, Required: ${input.toFixed(7)} ${actualFromCode} + fee: ${feeInPi.toFixed(7)} Test Pi`);
-          
-          if (availableBalance < input) {
-            const errorMsg = `Insufficient ${actualFromCode} balance after trustline creation. Available: ${availableBalance.toFixed(7)}, Required: ${input.toFixed(7)}.`;
-            logger.error(`❌ ${errorMsg}`);
-            throw new Error(errorMsg);
-          }
-          
-          // Also check native balance for fees
-          const nativeBalance = latestBalances.find((b: any) => b.asset_type === 'native');
-          if (nativeBalance) {
-            const nativeBal = parseFloat(nativeBalance.balance);
-            if (nativeBal < feeInPi) {
-              const errorMsg = `Insufficient Test Pi for transaction fee. Available: ${nativeBal.toFixed(7)} Test Pi, Required: ${feeInPi.toFixed(7)} Test Pi.`;
-              logger.error(`❌ ${errorMsg}`);
-              throw new Error(errorMsg);
-            }
-          } else {
-            throw new Error(`No Test Pi balance found for transaction fees.`);
-          }
-        } else {
-          throw new Error(`No ${actualFromCode} balance found after trustline creation.`);
-        }
-      }
-      
-      logger.info(`✅ Balance validation passed after trustline creation`);
+      logger.info(`✅ Balance validation passed after fee payment`);
       
       // For AMM swaps through liquidity pools, use empty path
       // The network will automatically route through available liquidity pools
       // The pathPaymentStrictSend operation will find the best path including liquidity pools
       const path: StellarSdk.Asset[] = [];
       
+      const baseFee = await server.fetchBaseFee();
       
       let tx;
       try {
@@ -508,7 +541,7 @@ class SwapService {
         .addOperation(
           StellarSdk.Operation.pathPaymentStrictSend({
             sendAsset: fromAsset,
-            sendAmount,
+            sendAmount: adjustedSendAmount, // Use adjusted amount after platform fee
             destination: publicKey,
             destAsset: toAsset,
             destMin: minDestAmount,
@@ -1037,6 +1070,14 @@ class SwapService {
         await this.ensureTrustline(userSecret, to.code, to.issuer);
       }
 
+      // Collect platform fee before swap
+      const swapFeeAmount = await this.collectSwapFee(userSecret, sendAmount, from.code);
+      
+      // Adjust send amount: deduct platform fee from input
+      const input = parseFloat(sendAmount);
+      const swapFeeNum = parseFloat(swapFeeAmount);
+      const adjustedSendAmount = (input - swapFeeNum).toFixed(7);
+
       const fromAsset =
         from.code === 'native' ? StellarSdk.Asset.native() : getAsset(from.code, from.issuer!);
       const toAsset =
@@ -1062,7 +1103,6 @@ class SwapService {
 
       const x = parseFloat(resA.amount);
       const y = parseFloat(resB.amount);
-      const input = parseFloat(sendAmount);
       const fee = pool.fee_bp / 10000;
 
       // Case-insensitive matching for asset codes
@@ -1073,13 +1113,14 @@ class SwapService {
       const inputReserve = isAtoB ? x : y;
       const outputReserve = isAtoB ? y : x;
 
-      const inputAfterFee = input * (1 - fee);
+      // Use adjusted send amount (after platform fee deduction) for swap calculation
+      const inputAfterPoolFee = parseFloat(adjustedSendAmount) * (1 - fee);
       const outputAmount =
-        (inputAfterFee * outputReserve) / (inputReserve + inputAfterFee);
+        (inputAfterPoolFee * outputReserve) / (inputReserve + inputAfterPoolFee);
 
       const minDestAmount = (outputAmount * (1 - slippagePercent / 100)).toFixed(7);
 
-
+      // Reload account after fee payment to get fresh sequence number
       const account = await this.loadAccountWithFallback(publicKey);
       const baseFee = await server.fetchBaseFee();
 
@@ -1090,7 +1131,7 @@ class SwapService {
         .addOperation(
           StellarSdk.Operation.pathPaymentStrictSend({
             sendAsset: fromAsset,
-            sendAmount,
+            sendAmount: adjustedSendAmount, // Use adjusted amount after platform fee
             destination: publicKey,
             destAsset: toAsset,
             destMin: minDestAmount,

@@ -14,6 +14,10 @@ const env = {
     MONGO_URI: process.env.MONGO_URI as string,
     PI_TEST_USER_PUBLIC_KEY: process.env.PI_TEST_USER_PUBLIC_KEY as string,
     PI_TEST_USER_SECRET: process.env.PI_TEST_USER_SECRET as string,
+    // Platform Fees
+    PLATFORM_MINT_FEE: process.env.PLATFORM_MINT_FEE as string || "100",
+    PLATFORM_POOL_FEE: process.env.PLATFORM_POOL_FEE as string || "10",
+    PLATFORM_SWAP_FEE_PERCENT: process.env.PLATFORM_SWAP_FEE_PERCENT as string || "0.3",
     // Horizon API Endpoints
     horizon: {
         // Official Stellar Horizon API

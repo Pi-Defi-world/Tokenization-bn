@@ -279,7 +279,7 @@ class TokenService {
       }
 
       const feeRecipientPublicKey = env.PI_TEST_USER_PUBLIC_KEY;
-      const platformFeeAmount = "100";
+      const platformFeeAmount = env.PLATFORM_MINT_FEE;
       const baseFeeNum = parseFloat(fee);
       const platformFeeNum = parseFloat(platformFeeAmount);
       const transactionFeeNum = baseFeeNum / 10000000;
@@ -337,7 +337,7 @@ class TokenService {
           amount: platformFeeAmount,
         })
       );
-        logger.info(`� Adding platform fee: 100 Pi to ${feeRecipientPublicKey}`);
+        logger.info(`� Adding platform fee: ${platformFeeAmount} Pi to ${feeRecipientPublicKey}`);
       
 
       const feeTx = feeTxBuilder.setTimeout(300).build(); // Increased timeout to 5 minutes to avoid tx_too_late

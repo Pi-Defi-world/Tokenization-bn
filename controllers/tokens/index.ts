@@ -5,9 +5,10 @@ import { MintTokenParams } from "../../services/token.service";
 
 export const getMintFee = async (req: Request, res: Response) => {
   try {
-    // Platform fee is always 100 Pi
-    const platformFee = "100"; // 100 Pi
-    const platformFeeStroops = "1000000000"; // 100 Pi in stroops
+    const env = await import("../../config/env");
+    // Platform fee from environment variable
+    const platformFee = env.default.PLATFORM_MINT_FEE;
+    const platformFeeStroops = (parseFloat(platformFee) * 10000000).toString(); // Convert to stroops
     
     // Get base fee from blockchain
     let baseFee = "0.01"; // Default
