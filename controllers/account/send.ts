@@ -75,8 +75,7 @@ export const sendPayment = async (req: Request, res: Response) => {
           });
         }
       } catch (error: any) {
-        // If account doesn't exist, we'll let Stellar handle the error when sending
-        // But for trustline check, if account doesn't exist, they definitely don't have trustline
+        
         const isNotFound = error?.response?.status === 404 || 
                           error?.constructor?.name === 'NotFoundError' ||
                           (error?.response?.data?.type === 'https://stellar.org/horizon-errors/not_found');

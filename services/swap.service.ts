@@ -913,6 +913,14 @@ class SwapService {
             logger.warn(`Failed to fetch pool ${pair.poolId} for registered pair: ${poolError?.message || String(poolError)}`);
           }
         }
+        
+        // If we found pools from registered pairs, we can optionally skip Horizon scanning
+        // But we'll still scan to find all available pools (including platform pairs)
+        // However, we can limit the scan if we already have good matches
+        if (matchedPools.length >= 2) {
+          // If we have 2+ pools from registered pairs, limit Horizon scan to reduce load
+          limit = Math.min(limit, 20);
+        }
       }
 
       // Always search Horizon pools to find all available pools (including platform pairs)
@@ -1087,12 +1095,19 @@ class SwapService {
         }
       }
 
-      logger.warn(`⚠️ No pools found for ${tokenA}/${tokenB} after scanning ${totalFetched} pools`);
+      // Only log warning if we actually scanned a significant number of pools
+      // This reduces log noise for expected "no pools found" scenarios
+      if (totalFetched >= 20) {
+        logger.warn(`⚠️ No pools found for ${tokenA}/${tokenB} after scanning ${totalFetched} pools`);
+      } else {
+        logger.info(`ℹ️ No pools found for ${tokenA}/${tokenB} (scanned ${totalFetched} pools)`);
+      }
       
       if (useCache) {
         try {
           const PoolCache = require('../models/PoolCache').default;
-          const expiresAt = new Date(Date.now() + 60000); // 1 minute for "not found"
+          // Cache "not found" results for 5 minutes to reduce repeated scans
+          const expiresAt = new Date(Date.now() + 300000); // 5 minutes for "not found"
           await PoolCache.findOneAndUpdate(
             { cacheKey },
             {

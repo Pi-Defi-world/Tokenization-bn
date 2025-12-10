@@ -26,6 +26,23 @@ class JwtService {
       return null;
     }
   }
+
+  decodeTokenWithDetails(token: string): { payload: ITokenPayload | null; isExpired: boolean; error?: string } {
+    try {
+      const decoded = jwt.verify(token, this.secret) as ITokenPayload;
+      return {
+        payload: decoded,
+        isExpired: false,
+      };
+    } catch (error: any) {
+      const isExpired = error.name === 'TokenExpiredError';
+      return {
+        payload: null,
+        isExpired,
+        error: error.message,
+      };
+    }
+  }
 }
 
 export const jwtService = new JwtService(env.JWT_SECRET);

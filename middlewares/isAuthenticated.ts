@@ -17,15 +17,43 @@ export const isAuthenticated = async (
   }
 
   try {
-    const decoded = jwtService.decodeToken(token);
-    const currentUser = await User.findById(decoded?.id);
+    // Use decodeTokenWithDetails to get more information about token errors
+    const tokenResult = (jwtService as any).decodeTokenWithDetails(token);
+    
+    if (!tokenResult.payload) {
+      // Token is invalid or expired
+      if (tokenResult.isExpired) {
+        logger.warn(`Expired token attempt: ${tokenResult.error}`);
+        return res.status(401).json({ 
+          message: "Token expired",
+          code: "TOKEN_EXPIRED",
+          expired: true
+        });
+      } else {
+        logger.warn(`Invalid token attempt: ${tokenResult.error}`);
+        return res.status(401).json({ 
+          message: "Invalid token",
+          code: "INVALID_TOKEN"
+        });
+      }
+    }
+
+    const currentUser = await User.findById(tokenResult.payload.id);
     if (currentUser) {
       (req as any).currentUser = currentUser;
       return next();
     } else {
-      return res.status(401).json({ message: "Invalid or expired token" });
+      logger.warn(`User not found for token: ${tokenResult.payload.id}`);
+      return res.status(401).json({ 
+        message: "User not found",
+        code: "USER_NOT_FOUND"
+      });
     }
-  } catch (error) {
-    return res.status(401).json({ message: "Invalid or expired token" });
+  } catch (error: any) {
+    logger.error(`Authentication error: ${error.message}`);
+    return res.status(401).json({ 
+      message: "Authentication failed",
+      code: "AUTH_ERROR"
+    });
   }
 };
