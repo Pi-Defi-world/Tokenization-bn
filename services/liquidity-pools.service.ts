@@ -187,8 +187,8 @@ export class PoolService {
       
       logger.success(`Platform fee paid - Hash: ${feeResponse.data.hash}`);
       
-      // Wait for transaction to be processed
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Wait for transaction to be processed (longer wait for account propagation)
+      await new Promise(resolve => setTimeout(resolve, 3000));
     } catch (err: any) {
       logger.error(`Platform fee collection failed for ${operation}: ${err.message || String(err)}`);
       throw err;
@@ -1021,11 +1021,77 @@ export class PoolService {
         );
       }
       
+      // Validate amounts match pool ratio
+      const poolRatio = parseFloat(resA.amount) / parseFloat(resB.amount);
+      const inputRatio = parseFloat(amountA) / parseFloat(amountB);
+      
+      // Allow 1% tolerance for ratio matching
+      const ratioTolerance = 0.01;
+      const ratioDiff = Math.abs(inputRatio - poolRatio) / poolRatio;
+      
+      if (ratioDiff > ratioTolerance) {
+        // Calculate the correct amountB based on amountA and pool ratio
+        const correctAmountB = (parseFloat(amountA) / poolRatio).toFixed(7);
+        
+        // Parse asset names for error message
+        const assetAName = resA.asset === 'native' ? 'native' : (resA.asset.split(':')[0] || 'unknown');
+        const assetBName = resB.asset === 'native' ? 'native' : (resB.asset.split(':')[0] || 'unknown');
+        
+        throw new Error(
+          `Amounts do not match pool ratio. Pool ratio: ${poolRatio.toFixed(7)} (${assetAName}:${assetBName}). ` +
+          `For ${amountA} ${assetAName}, you need approximately ${correctAmountB} ${assetBName}. ` +
+          `You provided ${amountB} ${assetBName}. ` +
+          `The amounts must maintain the pool's current price ratio.`
+        );
+      }
+      
       // Collect platform fee before adding liquidity
       await this.collectPlatformFee(userSecret, env.PLATFORM_POOL_FEE, 'add liquidity');
       
-      // Reload account after fee payment to get fresh sequence number
-      const account = await server.loadAccount(user.publicKey());
+      // Reload account after fee payment using HTTP fallback (more reliable after transactions)
+      let account;
+      const maxRetries = 5;
+      let retries = 0;
+      
+      while (retries < maxRetries) {
+        try {
+          // Try HTTP first (more reliable after transactions)
+          if (retries === 0) {
+            try {
+              const accountPath = `/accounts/${user.publicKey()}`;
+              const response = await horizonQueue.get<any>(accountPath, {
+                timeout: 10000,
+                validateStatus: (status: number) => status < 500,
+              }, 1);
+              
+              if (response && typeof response === 'object' && 'status' in response) {
+                const httpResponse = response as { status: number; data?: any };
+                if (httpResponse.status === 200 && httpResponse.data) {
+                  // Convert HTTP account data to SDK account format
+                  account = new StellarSdk.Account(user.publicKey(), httpResponse.data.sequence);
+                  break;
+                }
+              }
+            } catch (httpError: any) {
+              // HTTP failed, try SDK
+            }
+          }
+          
+          // Try SDK
+          if (retries > 0) {
+            await new Promise(resolve => setTimeout(resolve, 2000 * retries));
+          }
+          
+          account = await server.loadAccount(user.publicKey());
+          break;
+        } catch (sdkError: any) {
+          retries++;
+          if (retries >= maxRetries) {
+            logger.error(`Failed to load account after fee payment after ${maxRetries} retries`);
+            throw new Error(`Failed to load account after fee payment. Please try again.`);
+          }
+        }
+      }
       
       const exactPrice = parseFloat(resA.amount) / parseFloat(resB.amount);
       const minPrice = (exactPrice * 0.9).toFixed(7);
@@ -1141,8 +1207,50 @@ export class PoolService {
       // Collect platform fee before removing liquidity
       await this.collectPlatformFee(userSecret, env.PLATFORM_POOL_FEE, 'remove liquidity');
       
-      // Reload account after fee payment to get fresh sequence number
-      const account = await server.loadAccount(user.publicKey());
+      // Reload account after fee payment using HTTP fallback (more reliable after transactions)
+      let account;
+      const maxRetries = 5;
+      let retries = 0;
+      
+      while (retries < maxRetries) {
+        try {
+          // Try HTTP first (more reliable after transactions)
+          if (retries === 0) {
+            try {
+              const accountPath = `/accounts/${user.publicKey()}`;
+              const response = await horizonQueue.get<any>(accountPath, {
+                timeout: 10000,
+                validateStatus: (status: number) => status < 500,
+              }, 1);
+              
+              if (response && typeof response === 'object' && 'status' in response) {
+                const httpResponse = response as { status: number; data?: any };
+                if (httpResponse.status === 200 && httpResponse.data) {
+                  // Convert HTTP account data to SDK account format
+                  account = new StellarSdk.Account(user.publicKey(), httpResponse.data.sequence);
+                  break;
+                }
+              }
+            } catch (httpError: any) {
+              // HTTP failed, try SDK
+            }
+          }
+          
+          // Try SDK
+          if (retries > 0) {
+            await new Promise(resolve => setTimeout(resolve, 2000 * retries));
+          }
+          
+          account = await server.loadAccount(user.publicKey());
+          break;
+        } catch (sdkError: any) {
+          retries++;
+          if (retries >= maxRetries) {
+            logger.error(`Failed to load account after fee payment after ${maxRetries} retries`);
+            throw new Error(`Failed to load account after fee payment. Please try again.`);
+          }
+        }
+      }
 
       const [resA, resB] = pool.reserves;
       const shareRatio = parseFloat(shareAmount) / parseFloat(pool.total_shares);

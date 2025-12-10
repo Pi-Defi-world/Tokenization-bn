@@ -111,11 +111,53 @@ export const executeSwap = async (req: Request, res: Response) => {
   } catch (err: any) {
     logger.error(`❌ executeSwap failed:`, err);
     
+    // Extract detailed error information
+    let errorMessage = err?.message || err?.toString() || 'Unknown error';
+    let errorDetails: any = null;
+    
+    // Check for Horizon API error response
+    if (err?.response?.data) {
+      errorDetails = err.response.data;
+      
+      // Extract operation error codes if available
+      if (err.response.data.extras?.result_codes) {
+        const resultCodes = err.response.data.extras.result_codes;
+        const opError = resultCodes.operations?.[0];
+        const txError = resultCodes.transaction;
+        
+        // Use the detailed error message from swapWithPool if available
+        if (err.message && err.message !== 'Bad Request') {
+          errorMessage = err.message;
+        } else if (opError) {
+          errorMessage = `Transaction failed: ${opError}`;
+        } else if (txError) {
+          errorMessage = `Transaction failed: ${txError}`;
+        }
+      }
+      
+      // Check for other error details
+      if (err.response.data.detail) {
+        errorMessage = err.response.data.detail;
+      } else if (err.response.data.title) {
+        errorMessage = err.response.data.title;
+      }
+    }
+    
+    // Log full error details for debugging
+    logger.error(`Full error details:`, {
+      message: errorMessage,
+      response: err?.response?.data,
+      status: err?.response?.status || err?.status,
+      stack: err?.stack,
+    });
+    
     // Return appropriate status code based on error type
     const statusCode = err?.status === 400 || err?.response?.status === 400 ? 400 : 500;
     return res.status(statusCode).json({ 
       success: false, 
-      error: err.message || err.toString() 
+      error: errorMessage,
+      details: errorDetails,
+      status: statusCode
     });
   }
 };

@@ -273,14 +273,30 @@ class SwapService {
       const inputReserve = isAtoB ? x : y;
       const outputReserve = isAtoB ? y : x;
 
+      // Validate pool has sufficient reserves for the requested amount
+      if (input > inputReserve) {
+        throw new Error(
+          `Insufficient liquidity in pool. Requested: ${input.toFixed(7)} ${from.code}, Available in pool: ${inputReserve.toFixed(7)} ${from.code}. The pool does not have enough ${from.code} to complete this swap.`
+        );
+      }
+
       const inputAfterFee = input * (1 - fee);
       const outputAmount =
         (inputAfterFee * outputReserve) / (inputReserve + inputAfterFee);
+      
+      // Validate pool has sufficient output reserve
+      if (outputAmount > outputReserve) {
+        throw new Error(
+          `Insufficient liquidity in pool. Calculated output: ${outputAmount.toFixed(7)} ${to.code}, Available in pool: ${outputReserve.toFixed(7)} ${to.code}. The pool does not have enough ${to.code} to complete this swap.`
+        );
+      }
+      
       const minOut = (outputAmount * (1 - slippagePercent / 100)).toFixed(7);
 
       let availableBalance: number | null = null;
       let isSufficient = true;
       let balanceError: string | null = null;
+      let poolLiquidityError: string | null = null;
 
       if (publicKey && from.code === 'native') {
         try {
@@ -319,6 +335,9 @@ class SwapService {
         availableBalance: availableBalance !== null ? availableBalance.toFixed(7) : null,
         isSufficient,
         balanceError,
+        poolLiquidityError,
+        inputReserve: inputReserve.toFixed(7),
+        outputReserve: outputReserve.toFixed(7),
       };
     } catch (err: any) {
       logger.error(`❌ quoteSwap failed: ${err.message}`);
@@ -410,86 +429,111 @@ class SwapService {
       const inputReserve = isAtoB ? x : y;
       const outputReserve = isAtoB ? y : x;
 
+      // Validate pool has sufficient reserves BEFORE proceeding
+      const adjustedInputNum = parseFloat(adjustedSendAmount);
+      if (adjustedInputNum > inputReserve) {
+        throw new Error(
+          `Insufficient liquidity in pool. Requested: ${adjustedSendAmount} ${actualFromCode}, Available in pool: ${inputReserve.toFixed(7)} ${actualFromCode}. The pool does not have enough ${actualFromCode} to complete this swap.`
+        );
+      }
+
       // Use adjusted send amount (after platform fee deduction) for swap calculation
-      const inputAfterPoolFee = parseFloat(adjustedSendAmount) * (1 - fee);
+      const inputAfterPoolFee = adjustedInputNum * (1 - fee);
       const outputAmount =
         (inputAfterPoolFee * outputReserve) / (inputReserve + inputAfterPoolFee);
+      
+      // Validate output reserve is sufficient
+      if (outputAmount > outputReserve) {
+        throw new Error(
+          `Insufficient liquidity in pool. Calculated output: ${outputAmount.toFixed(7)} ${actualToCode}, Available in pool: ${outputReserve.toFixed(7)} ${actualToCode}. The pool does not have enough ${actualToCode} to complete this swap.`
+        );
+      }
+      
       const minDestAmount = (outputAmount * (1 - slippagePercent / 100)).toFixed(7);
 
-      // Reload account after trustline creation to get updated sequence number
-      // CRITICAL: Sequence number must be incremented after trustline transaction
+      // Reload account after fee payment - use HTTP fallback immediately since SDK is unreliable after transactions
+      // Wait a bit longer after fee payment to ensure transaction is processed
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
       let finalAccount: any;
       let retries = 0;
       const maxRetries = 5;
       
       
-      while (retries < maxRetries) {
-        try {
-          // Additional delay for retries
-          if (retries > 0) {
-            const delay = 2000 * retries; // 2s, 4s, 6s, 8s
-            await new Promise(resolve => setTimeout(resolve, delay));
+      // Try HTTP first after fee payment (more reliable than SDK after transactions)
+      try {
+        const horizonUrl = env.HORIZON_URL;
+        const accountUrl = `${horizonUrl}/accounts/${publicKey}`;
+        const response = await axios.get(accountUrl, { timeout: 15000 });
+        
+        if (response.status === 200 && response.data) {
+          const accountData = response.data;
+          const httpSequence = accountData.sequence;
+          
+          // Verify sequence has increased (should be incremented by fee payment + trustline if created)
+          const seqNum = BigInt(httpSequence);
+          const initSeq = BigInt(initialSequence);
+          const expectedIncrement = actualToCode !== 'native' ? 2 : 1; // Trustline + fee payment, or just fee payment
+          
+          if (seqNum <= initSeq) {
+            logger.warn(`Sequence number not updated yet (${httpSequence} <= ${initialSequence}). Waiting and retrying...`);
+            // Wait and retry
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            const retryResponse = await axios.get(accountUrl, { timeout: 15000 });
+            if (retryResponse.status === 200 && retryResponse.data) {
+              const retrySequence = BigInt(retryResponse.data.sequence);
+              if (retrySequence <= initSeq) {
+                throw new Error(`Account sequence not updated after fee payment. Expected increment of at least ${expectedIncrement}, but sequence is still ${retryResponse.data.sequence} (was ${initialSequence}). Please wait a few seconds and try again.`);
+              }
+              const sequenceStr = String(retryResponse.data.sequence);
+              finalAccount = new StellarSdk.Account(publicKey, sequenceStr);
+              if (retryResponse.data.balances && Array.isArray(retryResponse.data.balances)) {
+                (finalAccount as any).balances = retryResponse.data.balances;
+              }
+              logger.info(`✅ Account loaded via HTTP fallback after retry: sequence=${sequenceStr}`);
+            } else {
+              throw new Error(`Failed to load account after retry`);
+            }
+          } else {
+            const sequenceStr = String(httpSequence);
+            finalAccount = new StellarSdk.Account(publicKey, sequenceStr);
+            if (accountData.balances && Array.isArray(accountData.balances)) {
+              (finalAccount as any).balances = accountData.balances;
+            }
+            logger.info(`✅ Account loaded via HTTP: sequence=${sequenceStr}`);
           }
-          
-          // Use SDK - this is required for proper transaction building
-          finalAccount = await server.loadAccount(publicKey);
-          const newSequence = finalAccount.sequenceNumber();
-          
-          // Verify sequence has increased (trustline transaction should increment it)
-          if (actualToCode !== 'native') {
+        }
+      } catch (httpError: any) {
+        logger.warn(`HTTP fallback failed, trying SDK: ${httpError?.message || String(httpError)}`);
+        
+        // Fallback to SDK with retries
+        while (retries < maxRetries) {
+          try {
+            if (retries > 0) {
+              const delay = 2000 * retries;
+              await new Promise(resolve => setTimeout(resolve, delay));
+            }
+            
+            finalAccount = await server.loadAccount(publicKey);
+            const newSequence = finalAccount.sequenceNumber();
+            
             const seqNum = BigInt(newSequence);
             const initSeq = BigInt(initialSequence);
             if (seqNum <= initSeq && retries < maxRetries - 1) {
               retries++;
               continue;
             }
-          }
-          
-          break;
-        } catch (sdkError: any) {
-          retries++;
-          
-          if (retries >= maxRetries) {
-            logger.warn(`SDK failed after ${maxRetries} retries, trying HTTP fallback as last resort...`);
-            try {
-              const horizonUrl = env.HORIZON_URL;
-              const accountUrl = `${horizonUrl}/accounts/${publicKey}`;
-              const response = await axios.get(accountUrl, { timeout: 15000 });
-              
-              if (response.status === 200 && response.data) {
-                const accountData = response.data;
-                const httpSequence = accountData.sequence;
-                
-                // Verify sequence has increased
-                if (actualToCode !== 'native') {
-                  const seqNum = BigInt(httpSequence);
-                  const initSeq = BigInt(initialSequence);
-                  if (seqNum <= initSeq) {
-                    logger.error(`CRITICAL: Sequence number from HTTP fallback is not updated (${httpSequence} <= ${initialSequence}). Trustline transaction may not have propagated.`);
-                    throw new Error(`Account sequence not updated after trustline creation. Please wait a few seconds and try again.`);
-                  }
-                }
-                const sequenceStr = String(httpSequence);
-                finalAccount = new StellarSdk.Account(publicKey, sequenceStr);
-                if (accountData.balances && Array.isArray(accountData.balances)) {
-                  (finalAccount as any).balances = accountData.balances;
-                  logger.info(`Attached ${accountData.balances.length} balances to Account object from HTTP fallback`);
-                }
-                
-                // Log the account object details for debugging
-                logger.info(`Created Account object from HTTP fallback: sequence=${sequenceStr}, publicKey=${publicKey}`);
-                break;
-              }
-            } catch (httpError: any) {
-              logger.error(`HTTP fallback also failed: ${httpError?.message || String(httpError)}`);
-            }
             
-            // If all else fails, throw error
-            logger.error(`❌ CRITICAL: Failed to load account after trustline creation after all retries. Cannot proceed with transaction.`);
-            logger.error(`SDK Error: ${sdkError?.message || String(sdkError)}`);
-            throw new Error(`Failed to load account after trustline creation. Please try again in a few seconds.`);
+            logger.info(`✅ Account loaded via SDK: sequence=${newSequence}`);
+            break;
+          } catch (sdkError: any) {
+            retries++;
+            if (retries >= maxRetries) {
+              logger.error(`❌ Failed to load account after ${maxRetries} SDK retries and HTTP fallback failed`);
+              throw new Error(`Failed to load account after fee payment. Please try again in a few seconds.`);
+            }
+            logger.warn(`SDK account load failed (attempt ${retries}/${maxRetries}): ${sdkError?.message || String(sdkError)}`);
           }
-          logger.warn(`SDK account load failed (attempt ${retries}/${maxRetries}): ${sdkError?.message || String(sdkError)}`);
         }
       }
       
@@ -533,35 +577,62 @@ class SwapService {
       
       let tx;
       try {
-        tx = new StellarSdk.TransactionBuilder(finalAccount, {
-        fee: baseFee.toString(),
-        networkPassphrase: env.NETWORK,
-      })
-        .addOperation(
-          StellarSdk.Operation.pathPaymentStrictSend({
-            sendAsset: fromAsset,
-            sendAmount: adjustedSendAmount, // Use adjusted amount after platform fee
-            destination: publicKey,
-            destAsset: toAsset,
-            destMin: minDestAmount,
-              path: path,
-          })
-        )
-        .setTimeout(60)
-        .build();
+        // Validate account and sequence before building
+        if (!finalAccount || !finalAccount.sequenceNumber) {
+          throw new Error(`Invalid account object: missing sequence number`);
+        }
         
-        logger.info(`✅ Transaction built successfully`);
+        const currentSequence = finalAccount.sequenceNumber();
+        logger.info(`Building transaction with sequence: ${currentSequence}, initial was: ${initialSequence}`);
+        
+        // Validate amounts
+        const adjustedAmountNum = parseFloat(adjustedSendAmount);
+        const minDestAmountNum = parseFloat(minDestAmount);
+        
+        if (isNaN(adjustedAmountNum) || adjustedAmountNum <= 0) {
+          throw new Error(`Invalid send amount: ${adjustedSendAmount}`);
+        }
+        if (isNaN(minDestAmountNum) || minDestAmountNum <= 0) {
+          throw new Error(`Invalid minimum destination amount: ${minDestAmount}`);
+        }
+        
+        tx = new StellarSdk.TransactionBuilder(finalAccount, {
+          fee: baseFee.toString(),
+          networkPassphrase: env.NETWORK,
+        })
+          .addOperation(
+            StellarSdk.Operation.pathPaymentStrictSend({
+              sendAsset: fromAsset,
+              sendAmount: adjustedSendAmount, // Use adjusted amount after platform fee
+              destination: publicKey,
+              destAsset: toAsset,
+              destMin: minDestAmount,
+              path: path,
+            })
+          )
+          .setTimeout(60)
+          .build();
+        
+        logger.info(`✅ Transaction built successfully with sequence ${currentSequence}`);
       } catch (buildError: any) {
         logger.error(`❌ Failed to build transaction:`, buildError);
         logger.error(`Build error details:`, {
           message: buildError?.message,
-          accountSequence: finalAccount.sequenceNumber(),
-          fromAsset: fromAsset.getCode(),
-          toAsset: toAsset.getCode(),
-          sendAmount,
-          minDestAmount,
+          stack: buildError?.stack,
+          accountSequence: finalAccount?.sequenceNumber?.(),
+          initialSequence: initialSequence,
+          fromAsset: fromAsset?.getCode?.(),
+          toAsset: toAsset?.getCode?.(),
+          sendAmount: adjustedSendAmount,
+          minDestAmount: minDestAmount,
+          accountValid: !!finalAccount,
         });
-        throw new Error(`Failed to build transaction: ${buildError?.message || 'Unknown error'}`);
+        
+        // Create a more descriptive error
+        const errorMsg = buildError?.message || 'Unknown error building transaction';
+        const enhancedError = new Error(`Failed to build transaction: ${errorMsg}`);
+        (enhancedError as any).originalError = buildError;
+        throw enhancedError;
       }
 
       tx.sign(user);
@@ -569,45 +640,70 @@ class SwapService {
       try {
         res = await server.submitTransaction(tx);
       } catch (submitError: any) {
-        // Log detailed error information BEFORE logger simplification
+        // Log detailed error information
         logger.error(`❌ Transaction submission failed`);
         
-        // Log full error details (bypassing logger simplification for critical errors)
-        console.error('=== TRANSACTION SUBMISSION ERROR DETAILS ===');
-        console.error('Error message:', submitError?.message || 'Unknown error');
-        console.error('Error type:', submitError?.name || typeof submitError);
+        // Extract error details
+        let detailedMessage = submitError?.message || 'Transaction submission failed';
+        let resultCodes: any = null;
         
-        if (submitError?.response) {
-          console.error('Response status:', submitError.response.status);
-          console.error('Response statusText:', submitError.response.statusText);
+        if (submitError?.response?.data) {
+          const errorData = submitError.response.data;
           
-          if (submitError.response.data) {
-            console.error('Response data:', JSON.stringify(submitError.response.data, null, 2));
+          // Log full error details
+          logger.error(`Transaction error details:`, {
+            status: submitError.response.status,
+            type: errorData.type,
+            title: errorData.title,
+            detail: errorData.detail,
+            extras: errorData.extras,
+            resultCodes: errorData.extras?.result_codes,
+          });
+          
+          // Extract operation error code
+          resultCodes = errorData.extras?.result_codes;
+          if (resultCodes) {
+            const opError = resultCodes.operations?.[0];
+            const txError = resultCodes.transaction;
             
-            if (submitError.response.data.extras) {
-              console.error('Extras:', JSON.stringify(submitError.response.data.extras, null, 2));
-              
-              if (submitError.response.data.extras.result_codes) {
-                console.error('Result codes:', JSON.stringify(submitError.response.data.extras.result_codes, null, 2));
-                console.error('Transaction result:', submitError.response.data.extras.result_codes.transaction);
-                console.error('Operation results:', submitError.response.data.extras.result_codes.operations);
+            if (opError) {
+              // Map operation errors to user-friendly messages
+              if (opError === 'op_no_trust') {
+                detailedMessage = 'Trustline not found. You need to establish a trustline for this asset before swapping.';
+              } else if (opError === 'op_underfunded') {
+                detailedMessage = `Insufficient balance. You do not have enough ${actualFromCode === 'native' ? 'Test Pi' : actualFromCode} to complete this swap.`;
+              } else if (opError === 'op_low_reserve') {
+                detailedMessage = 'Insufficient reserve. Your account needs more Test Pi to maintain the minimum reserve.';
+              } else if (opError === 'op_line_full') {
+                detailedMessage = 'Trustline limit reached. You have reached the maximum balance for this asset.';
+              } else if (opError === 'op_path_payment_strict_send_no_destination') {
+                detailedMessage = 'No path found. Unable to find a valid path for this swap.';
+              } else if (opError === 'op_path_payment_strict_send_too_few_offers') {
+                detailedMessage = 'Insufficient liquidity. The pool does not have enough liquidity for this swap.';
+              } else if (opError === 'op_path_payment_strict_send_offer_cross_self') {
+                detailedMessage = 'Invalid swap path. The swap path crosses with your own offer.';
+              } else {
+                detailedMessage = `Transaction failed: ${opError}. Please check your balance and account status.`;
               }
-              
-              if (submitError.response.data.extras.invalid_field) {
-                console.error('Invalid field:', submitError.response.data.extras.invalid_field);
-              }
-              
-              if (submitError.response.data.extras.reason) {
-                console.error('Reason:', submitError.response.data.extras.reason);
-              }
+            } else if (txError) {
+              detailedMessage = `Transaction failed: ${txError}`;
+            } else if (errorData.detail) {
+              detailedMessage = errorData.detail;
+            } else if (errorData.title) {
+              detailedMessage = errorData.title;
             }
           }
         }
         
-        // Also use logger for simplified view
-        logger.error(`Transaction submission error:`, submitError);
+        // Create enhanced error with detailed message
+        const enhancedError = new Error(detailedMessage);
+        (enhancedError as any).response = submitError?.response;
+        (enhancedError as any).status = submitError?.response?.status || 400;
+        (enhancedError as any).operationError = resultCodes?.operations?.[0];
+        (enhancedError as any).transactionError = resultCodes?.transaction;
+        (enhancedError as any).resultCodes = resultCodes;
         
-        throw submitError;
+        throw enhancedError;
       }
 
       logger.success(`✅ Swap successful! TX: ${res.hash}`);
