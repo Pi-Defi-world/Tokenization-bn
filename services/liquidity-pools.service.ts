@@ -1045,10 +1045,7 @@ export class PoolService {
         );
       }
       
-      // Collect platform fee before adding liquidity
-      await this.collectPlatformFee(userSecret, env.PLATFORM_POOL_FEE, 'add liquidity');
-      
-      // Reload account after fee payment using HTTP fallback (more reliable after transactions)
+      // Reload account using HTTP fallback (more reliable after transactions)
       let account;
       const maxRetries = 5;
       let retries = 0;
@@ -1136,7 +1133,15 @@ export class PoolService {
         result_meta_xdr: response.data.result_meta_xdr,
       };
       
-      logger.success(` Added liquidity successfully`);
+      logger.success(`✅ Added liquidity successfully`);
+      
+      // Collect platform fee AFTER successful liquidity deposit
+      try {
+        await this.collectPlatformFee(userSecret, env.PLATFORM_POOL_FEE, 'add liquidity');
+      } catch (feeError: any) {
+        // Log fee collection error but don't fail the deposit (it already succeeded)
+        logger.error(`⚠️ Failed to collect platform fee after adding liquidity: ${feeError?.message || String(feeError)}`);
+      }
       
       PoolCache.deleteMany({}).catch((err: any) => {
         logger.warn(`Failed to clear pool cache after adding liquidity: ${err?.message || String(err)}`);
@@ -1204,10 +1209,7 @@ export class PoolService {
       const user = StellarSdk.Keypair.fromSecret(userSecret);
       const pool = await this.getLiquidityPoolById(poolId);
 
-      // Collect platform fee before removing liquidity
-      await this.collectPlatformFee(userSecret, env.PLATFORM_POOL_FEE, 'remove liquidity');
-      
-      // Reload account after fee payment using HTTP fallback (more reliable after transactions)
+      // Reload account using HTTP fallback (more reliable after transactions)
       let account;
       const maxRetries = 5;
       let retries = 0;
@@ -1297,7 +1299,15 @@ export class PoolService {
         result_meta_xdr: response.data.result_meta_xdr,
       };
       
-      logger.success(` Liquidity withdrawn successfully`);
+      logger.success(`✅ Liquidity withdrawn successfully`);
+      
+      // Collect platform fee AFTER successful liquidity withdrawal
+      try {
+        await this.collectPlatformFee(userSecret, env.PLATFORM_POOL_FEE, 'remove liquidity');
+      } catch (feeError: any) {
+        // Log fee collection error but don't fail the withdrawal (it already succeeded)
+        logger.error(`⚠️ Failed to collect platform fee after removing liquidity: ${feeError?.message || String(feeError)}`);
+      }
       
       PoolCache.deleteMany({}).catch((err: any) => {
         logger.warn(`Failed to clear pool cache after removing liquidity: ${err?.message || String(err)}`);

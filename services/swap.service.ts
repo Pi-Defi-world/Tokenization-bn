@@ -424,13 +424,10 @@ class SwapService {
         await new Promise(resolve => setTimeout(resolve, 2000));  
       }
 
-      // Collect platform fee before swap
-      const swapFeeAmount = await this.collectSwapFee(userSecret, sendAmount, actualFromCode);
-      
-      // Adjust send amount: deduct platform fee from input
+      // Calculate platform fee (will be collected AFTER successful swap)
+      const swapFeePercent = parseFloat(env.PLATFORM_SWAP_FEE_PERCENT) / 100;
       const input = parseFloat(sendAmount);
-      const swapFeeNum = parseFloat(swapFeeAmount);
-      const adjustedSendAmount = (input - swapFeeNum).toFixed(7);
+      const swapFeeAmount = (input * swapFeePercent).toFixed(7);
 
       const fee = pool.fee_bp / 10000;
       const x = parseFloat(resA.amount);
@@ -438,16 +435,15 @@ class SwapService {
       const inputReserve = isAtoB ? x : y;
       const outputReserve = isAtoB ? y : x;
 
-      // Validate pool has sufficient reserves BEFORE proceeding
-      const adjustedInputNum = parseFloat(adjustedSendAmount);
-      if (adjustedInputNum > inputReserve) {
+      // Validate pool has sufficient reserves BEFORE proceeding (use full sendAmount)
+      if (input > inputReserve) {
         throw new Error(
-          `Insufficient liquidity in pool. Requested: ${adjustedSendAmount} ${actualFromCode}, Available in pool: ${inputReserve.toFixed(7)} ${actualFromCode}. The pool does not have enough ${actualFromCode} to complete this swap.`
+          `Insufficient liquidity in pool. Requested: ${sendAmount} ${actualFromCode}, Available in pool: ${inputReserve.toFixed(7)} ${actualFromCode}. The pool does not have enough ${actualFromCode} to complete this swap.`
         );
       }
 
-      // Use adjusted send amount (after platform fee deduction) for swap calculation
-      const inputAfterPoolFee = adjustedInputNum * (1 - fee);
+      // Use full send amount for swap calculation (fee collected after)
+      const inputAfterPoolFee = input * (1 - fee);
       const outputAmount =
         (inputAfterPoolFee * outputReserve) / (inputReserve + inputAfterPoolFee);
       
@@ -460,16 +456,15 @@ class SwapService {
       
       const minDestAmount = (outputAmount * (1 - slippagePercent / 100)).toFixed(7);
 
-      // Reload account after fee payment - use HTTP fallback immediately since SDK is unreliable after transactions
-      // Wait a bit longer after fee payment to ensure transaction is processed
-      await new Promise(resolve => setTimeout(resolve, 3000));
+ 
+      await new Promise(resolve => setTimeout(resolve, 2000));
       
       let finalAccount: any;
       let retries = 0;
       const maxRetries = 5;
       
       
-      // Try HTTP first after fee payment (more reliable than SDK after transactions)
+      // Try HTTP first (more reliable than SDK after transactions)
       try {
         const horizonUrl = env.HORIZON_URL;
         const accountUrl = `${horizonUrl}/accounts/${publicKey}`;
@@ -479,27 +474,27 @@ class SwapService {
           const accountData = response.data;
           const httpSequence = accountData.sequence;
           
-          // Verify sequence has increased (should be incremented by fee payment + trustline if created)
+           
           const seqNum = BigInt(httpSequence);
           const initSeq = BigInt(initialSequence);
-          const expectedIncrement = actualToCode !== 'native' ? 2 : 1; // Trustline + fee payment, or just fee payment
+          const expectedIncrement = actualToCode !== 'native' ? 1 : 0; // Trustline if created
           
-          if (seqNum <= initSeq) {
+          if (seqNum <= initSeq && expectedIncrement > 0) {
             logger.warn(`Sequence number not updated yet (${httpSequence} <= ${initialSequence}). Waiting and retrying...`);
             // Wait and retry
             await new Promise(resolve => setTimeout(resolve, 3000));
             const retryResponse = await axios.get(accountUrl, { timeout: 15000 });
             if (retryResponse.status === 200 && retryResponse.data) {
               const retrySequence = BigInt(retryResponse.data.sequence);
-              if (retrySequence <= initSeq) {
-                throw new Error(`Account sequence not updated after fee payment. Expected increment of at least ${expectedIncrement}, but sequence is still ${retryResponse.data.sequence} (was ${initialSequence}). Please wait a few seconds and try again.`);
+              if (retrySequence <= initSeq && expectedIncrement > 0) {
+                throw new Error(`Account sequence not updated after trustline creation. Expected increment of at least ${expectedIncrement}, but sequence is still ${retryResponse.data.sequence} (was ${initialSequence}). Please wait a few seconds and try again.`);
               }
               const sequenceStr = String(retryResponse.data.sequence);
               finalAccount = new StellarSdk.Account(publicKey, sequenceStr);
               if (retryResponse.data.balances && Array.isArray(retryResponse.data.balances)) {
                 (finalAccount as any).balances = retryResponse.data.balances;
               }
-              logger.info(`✅ Account loaded via HTTP fallback after retry: sequence=${sequenceStr}`);
+              logger.info(` Account loaded via HTTP fallback after retry: sequence=${sequenceStr}`);
             } else {
               throw new Error(`Failed to load account after retry`);
             }
@@ -509,7 +504,7 @@ class SwapService {
             if (accountData.balances && Array.isArray(accountData.balances)) {
               (finalAccount as any).balances = accountData.balances;
             }
-            logger.info(`✅ Account loaded via HTTP: sequence=${sequenceStr}`);
+            logger.info(` Account loaded via HTTP: sequence=${sequenceStr}`);
           }
         }
       } catch (httpError: any) {
@@ -533,13 +528,13 @@ class SwapService {
               continue;
             }
             
-            logger.info(`✅ Account loaded via SDK: sequence=${newSequence}`);
+            logger.info(` Account loaded via SDK: sequence=${newSequence}`);
             break;
           } catch (sdkError: any) {
             retries++;
             if (retries >= maxRetries) {
-              logger.error(`❌ Failed to load account after ${maxRetries} SDK retries and HTTP fallback failed`);
-              throw new Error(`Failed to load account after fee payment. Please try again in a few seconds.`);
+              logger.error(`  Failed to load account after ${maxRetries} SDK retries and HTTP fallback failed`);
+              throw new Error(`Failed to load account. Please try again in a few seconds.`);
             }
             logger.warn(`SDK account load failed (attempt ${retries}/${maxRetries}): ${sdkError?.message || String(sdkError)}`);
           }
@@ -553,9 +548,6 @@ class SwapService {
       }
       
       const finalSequence = finalAccount.sequenceNumber();
-      
-      // CRITICAL: Re-validate balance AFTER trustline creation and account reload
-      // The trustline transaction costs a fee, so the balance may have changed
       
       // Get latest balances from the reloaded account
       let latestBalances: any[] = [];
@@ -575,7 +567,7 @@ class SwapService {
         }
       }
       
-      logger.info(`✅ Balance validation passed after fee payment`);
+      logger.info(`  Balance validation passed`);
       
       // For AMM swaps through liquidity pools, use empty path
       // The network will automatically route through available liquidity pools
@@ -595,11 +587,11 @@ class SwapService {
         logger.info(`Building transaction with sequence: ${currentSequence}, initial was: ${initialSequence}`);
         
         // Validate amounts
-        const adjustedAmountNum = parseFloat(adjustedSendAmount);
+        const sendAmountNum = parseFloat(sendAmount);
         const minDestAmountNum = parseFloat(minDestAmount);
         
-        if (isNaN(adjustedAmountNum) || adjustedAmountNum <= 0) {
-          throw new Error(`Invalid send amount: ${adjustedSendAmount}`);
+        if (isNaN(sendAmountNum) || sendAmountNum <= 0) {
+          throw new Error(`Invalid send amount: ${sendAmount}`);
         }
         if (isNaN(minDestAmountNum) || minDestAmountNum <= 0) {
           throw new Error(`Invalid minimum destination amount: ${minDestAmount}`);
@@ -612,7 +604,7 @@ class SwapService {
           .addOperation(
             StellarSdk.Operation.pathPaymentStrictSend({
               sendAsset: fromAsset,
-              sendAmount: adjustedSendAmount, // Use adjusted amount after platform fee
+              sendAmount: sendAmount,  
               destination: publicKey,
               destAsset: toAsset,
               destMin: minDestAmount,
@@ -632,7 +624,7 @@ class SwapService {
           initialSequence: initialSequence,
           fromAsset: fromAsset?.getCode?.(),
           toAsset: toAsset?.getCode?.(),
-          sendAmount: adjustedSendAmount,
+          sendAmount: sendAmount,
           minDestAmount: minDestAmount,
           accountValid: !!finalAccount,
         });
@@ -716,6 +708,15 @@ class SwapService {
       }
 
       logger.success(`✅ Swap successful! TX: ${res.hash}`);
+      
+      // Collect platform fee AFTER successful swap
+      try {
+        await this.collectSwapFee(userSecret, sendAmount, actualFromCode);
+      } catch (feeError: any) {
+        // Log fee collection error but don't fail the swap (it already succeeded)
+        logger.error(`⚠️ Failed to collect platform fee after swap: ${feeError?.message || String(feeError)}`);
+      }
+      
       logger.info(`⏱ Duration: ${(Date.now() - start) / 1000}s`);
       logger.info(`----------------------------------------------`);
         
@@ -1174,13 +1175,10 @@ class SwapService {
         await this.ensureTrustline(userSecret, to.code, to.issuer);
       }
 
-      // Collect platform fee before swap
-      const swapFeeAmount = await this.collectSwapFee(userSecret, sendAmount, from.code);
-      
-      // Adjust send amount: deduct platform fee from input
+      // Calculate platform fee (will be collected AFTER successful swap)
+      const swapFeePercent = parseFloat(env.PLATFORM_SWAP_FEE_PERCENT) / 100;
       const input = parseFloat(sendAmount);
-      const swapFeeNum = parseFloat(swapFeeAmount);
-      const adjustedSendAmount = (input - swapFeeNum).toFixed(7);
+      const swapFeeAmount = (input * swapFeePercent).toFixed(7);
 
       const fromAsset =
         from.code === 'native' ? StellarSdk.Asset.native() : getAsset(from.code, from.issuer!);
@@ -1217,8 +1215,8 @@ class SwapService {
       const inputReserve = isAtoB ? x : y;
       const outputReserve = isAtoB ? y : x;
 
-      // Use adjusted send amount (after platform fee deduction) for swap calculation
-      const inputAfterPoolFee = parseFloat(adjustedSendAmount) * (1 - fee);
+      // Use full send amount for swap calculation (fee collected after)
+      const inputAfterPoolFee = input * (1 - fee);
       const outputAmount =
         (inputAfterPoolFee * outputReserve) / (inputReserve + inputAfterPoolFee);
 
@@ -1235,7 +1233,7 @@ class SwapService {
         .addOperation(
           StellarSdk.Operation.pathPaymentStrictSend({
             sendAsset: fromAsset,
-            sendAmount: adjustedSendAmount, // Use adjusted amount after platform fee
+            sendAmount: sendAmount, // Use full amount (fee collected after)
             destination: publicKey,
             destAsset: toAsset,
             destMin: minDestAmount,
@@ -1250,6 +1248,15 @@ class SwapService {
       const res = await server.submitTransaction(tx);
 
       logger.success(`✅ Swap successful!`);
+      
+      // Collect platform fee AFTER successful swap
+      try {
+        await this.collectSwapFee(userSecret, sendAmount, from.code);
+      } catch (feeError: any) {
+        // Log fee collection error but don't fail the swap (it already succeeded)
+        logger.error(`⚠️ Failed to collect platform fee after swap: ${feeError?.message || String(feeError)}`);
+      }
+      
       logger.info(`⏱ Duration: ${(Date.now() - start) / 1000}s`);
       logger.info('----------------------------------------------');
 

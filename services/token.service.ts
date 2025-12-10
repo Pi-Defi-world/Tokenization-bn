@@ -299,89 +299,7 @@ class TokenService {
         throw new Error(`Insufficient balance. Available: ${(availableStroops / 10000000).toFixed(7)} Pi, Required: ${(requiredStroops / 10000000).toFixed(7)} Pi`);
       }
 
-      // Transaction 1: Distributor pays platform fee
-      
-      // Reload account right before building to ensure fresh sequence number and avoid tx_too_late
-      const freshDistributorAccount = await this.loadAccountWithFallback(distributorPublicKey);
-      
-      // Final balance check right before building transaction
-      const freshNativeBalance = freshDistributorAccount.balances.find((b: any) => b.asset_type === 'native');
-      const freshDistributorBalance = freshNativeBalance ? parseFloat(freshNativeBalance.balance) : 0;
-      
-      // Get the actual minimum balance from Stellar (most accurate)
-      const stellarMinBalance = (freshDistributorAccount as any).minimum_balance || 
-        (freshDistributorAccount as any).minimumBalance;
-      
-      const freshSubentryCount = (freshDistributorAccount as any).subentry_count || 
-        freshDistributorAccount.balances.filter((b: any) => 
-          b.asset_type !== 'native' && b.asset_type !== 'liquidity_pool_shares'
-        ).length;
-      
-      // Use Stellar's minimum balance if available, otherwise calculate
-      const freshTotalReserve = stellarMinBalance ? 
-        (typeof stellarMinBalance === 'string' ? parseFloat(stellarMinBalance) : stellarMinBalance) / 10000000 : // Convert stroops to Pi
-        baseReserve + (freshSubentryCount * subentryReserve);
-      
-      const freshAvailableBalance = freshDistributorBalance - freshTotalReserve;
-      
-      
-      const feeTxBuilder = new StellarSdk.TransactionBuilder(freshDistributorAccount, {
-        fee,
-        networkPassphrase: env.NETWORK,
-      });
-
-      feeTxBuilder.addOperation(
-        StellarSdk.Operation.payment({
-          destination: feeRecipientPublicKey,
-          asset: StellarSdk.Asset.native(), // Native Pi
-          amount: platformFeeAmount,
-        })
-      );
-        logger.info(`� Adding platform fee: ${platformFeeAmount} Pi to ${feeRecipientPublicKey}`);
-      
-
-      const feeTx = feeTxBuilder.setTimeout(300).build(); // Increased timeout to 5 minutes to avoid tx_too_late
-      feeTx.sign(distributor);
-
-      // Reload account before submission
-      const preSubmitAccount = await this.loadAccountWithFallback(distributorPublicKey);
-      const finalFeeTxBuilder = new StellarSdk.TransactionBuilder(preSubmitAccount, {
-        fee,
-        networkPassphrase: env.NETWORK,
-      });
-
-      finalFeeTxBuilder.addOperation(
-        StellarSdk.Operation.payment({
-          destination: feeRecipientPublicKey,
-          asset: StellarSdk.Asset.native(),
-          amount: platformFeeAmount,
-        })
-      );
-
-      const finalFeeTx = finalFeeTxBuilder.setTimeout(300).build();
-      finalFeeTx.sign(distributor);
-      
-      try {
-        const feeTxXdr = finalFeeTx.toXDR();
-        const submitUrl = `${env.HORIZON_URL}/transactions`;
-        
-        const feeResponse = await axios.post(submitUrl, `tx=${encodeURIComponent(feeTxXdr)}`, {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          timeout: 30000,
-        });
-        
-        logger.success(`✅ Platform fee paid - Hash: ${feeResponse.data.hash}`);
-        
-        // Wait a moment for the transaction to be processed
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      } catch (feeError: any) {
-        logger.error(`Platform fee transaction failed: ${feeError.response?.data?.extras?.result_codes || feeError.message}`);
-        throw feeError;
-      }
-
-      // Transaction 2: Issuer sends tokens to distributor
+      // Transaction: Issuer sends tokens to distributor (fee collected after success)
       const freshIssuerAccount = await this.loadAccountWithFallback(issuerPublicKey);
       
       const tokenTxBuilder = new StellarSdk.TransactionBuilder(freshIssuerAccount, {
@@ -396,6 +314,9 @@ class TokenService {
           amount: totalSupply,
         })
       );
+        logger.info(`� Adding platform fee: ${platformFeeAmount} Pi to ${feeRecipientPublicKey}`);
+      
+
       const tx = tokenTxBuilder.setTimeout(300).build();
       tx.sign(issuer);
 
@@ -419,7 +340,35 @@ class TokenService {
           result_meta_xdr: response.data.result_meta_xdr,
         };
         
-        logger.success(`� Token minted successfully - Hash: ${result.hash}`);
+        logger.success(` Token minted successfully - Hash: ${result.hash}`);
+        // Collect platform fee AFTER successful mint
+        try {
+          const feeRecipientPublicKey = env.PI_TEST_USER_PUBLIC_KEY;
+          const platformFeeAmount = env.PLATFORM_MINT_FEE;
+          const distributor = StellarSdk.Keypair.fromSecret(distributorSecret);
+          const freshDistributorAccount = await this.loadAccountWithFallback(distributor.publicKey());
+          const baseFee = await server.fetchBaseFee();
+
+          const feeTxBuilder = new StellarSdk.TransactionBuilder(freshDistributorAccount, {
+            fee: baseFee.toString(),
+            networkPassphrase: env.NETWORK,
+          });
+
+          feeTxBuilder.addOperation(
+            StellarSdk.Operation.payment({
+              destination: feeRecipientPublicKey,
+              asset: StellarSdk.Asset.native(),
+              amount: platformFeeAmount,
+            })
+          );
+
+          const feeTx = feeTxBuilder.setTimeout(300).build();
+          feeTx.sign(distributor);
+          await server.submitTransaction(feeTx);
+          logger.success(`✅ Platform mint fee paid - Hash: ${feeTx.hash}`);
+        } catch (feeError: any) {
+          logger.error(`⚠️ Failed to collect platform mint fee after successful mint: ${feeError?.message || String(feeError)}`);
+        }
       } catch (submitError: any) {
         logger.error(`Token payment failed: ${submitError.response?.data?.extras?.result_codes || submitError.message}`);
         throw submitError;

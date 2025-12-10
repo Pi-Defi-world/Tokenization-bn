@@ -220,7 +220,7 @@ export class AccountService {
 
           return {
             assetType: b.asset_type,
-            assetCode: b.asset_code || 'Test Pi',
+            assetCode: b.asset_type === 'native' ? 'native' : (b.asset_code || ''),
             assetIssuer: b.asset_issuer || null,
             asset: assetLabel,
             amount: amountNum,
@@ -230,6 +230,13 @@ export class AccountService {
         .filter((entry: any) => {
           if (Number.isNaN(entry.amount)) return false;
           return entry.amount > THRESHOLD;
+        })
+        // Remove duplicate native entries (should only be one)
+        .filter((entry: any, index: number, self: any[]) => {
+          if (entry.assetType === 'native') {
+            return index === self.findIndex((e) => e.assetType === 'native');
+          }
+          return true;
         });
 
       if (useCache) {
@@ -317,7 +324,7 @@ export class AccountService {
 
                   return {
                     assetType: b.asset_type,
-                    assetCode: b.asset_code || 'Test Pi',
+                    assetCode: b.asset_type === 'native' ? 'native' : (b.asset_code || ''),
                     assetIssuer: b.asset_issuer || null,
                     asset: assetLabel,
                     amount: amountNum,
@@ -327,6 +334,13 @@ export class AccountService {
                 .filter((entry: any) => {
                   if (Number.isNaN(entry.amount)) return false;
                   return entry.amount > THRESHOLD;
+                })
+                // Remove duplicate native entries (should only be one)
+                .filter((entry: any, index: number, self: any[]) => {
+                  if (entry.assetType === 'native') {
+                    return index === self.findIndex((e) => e.assetType === 'native');
+                  }
+                  return true;
                 });
 
               if (useCache) {
@@ -622,5 +636,7 @@ export class AccountService {
     return results;
   }
 }
+
+export const accountService = new AccountService();
 
 
