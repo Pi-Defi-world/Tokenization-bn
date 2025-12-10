@@ -1487,5 +1487,44 @@ export class PoolService {
       throw err;
     }
   }
+
+  public async quoteAddLiquidity(
+    poolId: string,
+    amountA: string
+  ): Promise<{ amountA: string; amountB: string; poolRatio: number; assetA: string; assetB: string }> {
+    try {
+      const pool = await this.getLiquidityPoolById(poolId);
+      
+      if (this.isPoolEmpty(pool)) {
+        throw new Error('Pool is empty. Cannot calculate quote for empty pool.');
+      }
+
+      const [resA, resB] = pool.reserves;
+      const poolRatio = parseFloat(resA.amount) / parseFloat(resB.amount);
+      
+      // Calculate required amountB based on amountA and pool ratio
+      const amountANum = parseFloat(amountA);
+      if (isNaN(amountANum) || amountANum <= 0) {
+        throw new Error('Invalid amountA. Must be a positive number.');
+      }
+      
+      const amountB = (amountANum / poolRatio).toFixed(7);
+      
+      // Parse asset names
+      const assetA = resA.asset === 'native' ? 'native' : (resA.asset.split(':')[0] || 'unknown');
+      const assetB = resB.asset === 'native' ? 'native' : (resB.asset.split(':')[0] || 'unknown');
+      
+      return {
+        amountA,
+        amountB,
+        poolRatio,
+        assetA,
+        assetB,
+      };
+    } catch (err: any) {
+      logger.error('Error calculating add liquidity quote:', err);
+      throw err;
+    }
+  }
  
 }

@@ -352,3 +352,28 @@ export const getPlatformPools = async (req: Request, res: Response) => {
   }
 };
 
+export const quoteAddLiquidity = async (req: Request, res: Response) => {
+  try {
+    const { poolId, amountA } = req.query as { poolId?: string; amountA?: string };
+
+    if (!poolId || !amountA) {
+      return res.status(400).json({
+        message: 'Missing required fields: poolId, amountA',
+      });
+    }
+
+    const quote = await poolService.quoteAddLiquidity(poolId, amountA);
+
+    return res.status(200).json({
+      success: true,
+      ...quote,
+    });
+  } catch (error: any) {
+    logger.error('quoteAddLiquidity failed:', error);
+    return res.status(500).json({ 
+      success: false,
+      message: error.message || 'Failed to calculate quote for adding liquidity' 
+    });
+  }
+};
+
