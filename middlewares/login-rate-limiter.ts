@@ -3,7 +3,7 @@ import LoginAttempt from '../models/LoginAttempt';
 import { loggingService } from '../services/logging.service';
 
 // Configuration from environment or defaults
-const MAX_LOGIN_ATTEMPTS = parseInt(process.env.MAX_LOGIN_ATTEMPTS || '5', 10);
+const MAX_LOGIN_ATTEMPTS = parseInt(process.env.MAX_LOGIN_ATTEMPTS || '10', 10);
 const LOCKOUT_DURATION_MS = parseInt(process.env.LOGIN_LOCKOUT_DURATION_MS || '900000', 10); // 15 minutes default
 const ATTEMPT_WINDOW_MS = parseInt(process.env.LOGIN_ATTEMPT_WINDOW_MS || '3600000', 10); // 1 hour default
 
