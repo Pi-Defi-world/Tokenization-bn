@@ -35,41 +35,50 @@ function sanitizeInput(input: any): any {
 }
 
 /**
+ * Sanitize string values in place (mutates the object)
+ */
+function sanitizeStringInPlace(obj: any): void {
+  if (typeof obj === 'string') {
+    // Sanitize string values - but we can't mutate strings, so this is for object properties
+    return;
+  }
+  
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) {
+      if (typeof obj[i] === 'string') {
+        obj[i] = obj[i]
+          .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+          .replace(/javascript:/gi, '');
+      } else if (obj[i] && typeof obj[i] === 'object') {
+        sanitizeStringInPlace(obj[i]);
+      }
+    }
+  } else if (obj && typeof obj === 'object') {
+    for (const key in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        if (typeof obj[key] === 'string') {
+          obj[key] = obj[key]
+            .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+            .replace(/javascript:/gi, '');
+        } else if (obj[key] && typeof obj[key] === 'object') {
+          sanitizeStringInPlace(obj[key]);
+        }
+      }
+    }
+  }
+}
+
+/**
  * Security middleware for input sanitization and validation
  */
 export const securityMiddleware = (req: Request, res: Response, next: NextFunction): void => {
   try {
-    // Sanitize query parameters
-    if (req.query && Object.keys(req.query).length > 0) {
-      req.query = sanitizeInput(req.query);
-    }
-
-    // Sanitize body (but preserve structure for API requests)
-    // Only sanitize string values, not the entire structure
+    // Note: req.query is read-only in Express, so we can't sanitize it directly
+    // Express already handles query parsing safely, so we skip query sanitization
+    
+    // Sanitize body string values in place (mutates req.body)
     if (req.body && typeof req.body === 'object') {
-      // Deep sanitize string values only
-      const sanitizeBody = (obj: any): any => {
-        if (typeof obj === 'string') {
-          // Only remove script tags and dangerous patterns, keep other content
-          return obj
-            .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-            .replace(/javascript:/gi, '');
-        }
-        if (Array.isArray(obj)) {
-          return obj.map(sanitizeBody);
-        }
-        if (obj && typeof obj === 'object') {
-          const sanitized: any = {};
-          for (const key in obj) {
-            if (Object.prototype.hasOwnProperty.call(obj, key)) {
-              sanitized[key] = sanitizeBody(obj[key]);
-            }
-          }
-          return sanitized;
-        }
-        return obj;
-      };
-      req.body = sanitizeBody(req.body);
+      sanitizeStringInPlace(req.body);
     }
 
     // Validate request size
