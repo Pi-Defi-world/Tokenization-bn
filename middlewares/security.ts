@@ -79,12 +79,13 @@ export const securityMiddleware = (req: Request, res: Response, next: NextFuncti
         `Request size exceeded: ${contentLength} bytes (max: ${MAX_REQUEST_SIZE})`,
         req
       );
-      return res.status(413).json({
+      res.status(413).json({
         success: false,
         message: 'Request payload too large.',
         code: 'PAYLOAD_TOO_LARGE',
         requestId: req.requestId,
       });
+      return;
     }
 
     // Set request timeout
