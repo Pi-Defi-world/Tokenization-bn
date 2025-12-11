@@ -147,7 +147,18 @@ class SwapService {
       .build();
 
     tx.sign(user);
-    await server.submitTransaction(tx);
+    
+    // Submit transaction using direct HTTP (workaround for SDK compatibility issues with Pi Network)
+    const txXdr = tx.toXDR();
+    const submitUrl = `${env.HORIZON_URL}/transactions`;
+    
+    await axios.post(submitUrl, `tx=${encodeURIComponent(txXdr)}`, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      timeout: 30000,
+    });
+    
     logger.success(`✅ Trustline created for ${assetCode}`);
   }
 
@@ -705,7 +716,24 @@ class SwapService {
       tx.sign(user);
       let res;
       try {
-        res = await server.submitTransaction(tx);
+        // Submit transaction using direct HTTP (workaround for SDK compatibility issues with Pi Network)
+        const txXdr = tx.toXDR();
+        const submitUrl = `${env.HORIZON_URL}/transactions`;
+        
+        const response = await axios.post(submitUrl, `tx=${encodeURIComponent(txXdr)}`, {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          timeout: 30000,
+        });
+        
+        res = {
+          hash: response.data.hash,
+          ledger: response.data.ledger,
+          envelope_xdr: response.data.envelope_xdr,
+          result_xdr: response.data.result_xdr,
+          result_meta_xdr: response.data.result_meta_xdr,
+        };
       } catch (submitError: any) {
         // Log detailed error information
         logger.error(`❌ Transaction submission failed`);
@@ -1389,7 +1417,24 @@ class SwapService {
 
       tx.sign(user);
 
-      const res = await server.submitTransaction(tx);
+      // Submit transaction using direct HTTP (workaround for SDK compatibility issues with Pi Network)
+      const txXdr = tx.toXDR();
+      const submitUrl = `${env.HORIZON_URL}/transactions`;
+      
+      const response = await axios.post(submitUrl, `tx=${encodeURIComponent(txXdr)}`, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        timeout: 30000,
+      });
+      
+      const res = {
+        hash: response.data.hash,
+        ledger: response.data.ledger,
+        envelope_xdr: response.data.envelope_xdr,
+        result_xdr: response.data.result_xdr,
+        result_meta_xdr: response.data.result_meta_xdr,
+      };
 
       logger.success(`✅ Swap successful!`);
       
