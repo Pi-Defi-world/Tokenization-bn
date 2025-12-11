@@ -435,47 +435,80 @@ export class AccountService {
     const { publicKey, limit = 20, cursor, order = 'desc' } = params;
     if (!publicKey) throw new Error('publicKey is required');
 
-    try {
-      let builder = server.operations().forAccount(publicKey).limit(limit).order(order);
-      if (cursor) builder = builder.cursor(cursor);
+    // Try HTTP first (more reliable than SDK)
+    let httpSuccess = false;
+    for (let httpAttempt = 0; httpAttempt < 3; httpAttempt++) {
+      try {
+        if (httpAttempt > 0) {
+          const delay = 2000 * httpAttempt; // 2s, 4s delays
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
 
-      const ops = await builder.call();
-      return this.formatOperations(ops.records, publicKey, limit, order);
-    } catch (error: any) {  
-      const isNotFoundError =
-        error?.response?.status === 404 ||
-        error?.constructor?.name === 'NotFoundError' ||
-        (error?.response?.data?.type === 'https://stellar.org/horizon-errors/not_found') ||
-        (error?.response?.data?.status === 404) ||
-        (error?.message && (
-          error.message.toLowerCase().includes('not found') ||
-          error.message.toLowerCase().includes('404')
-        ));
+        const horizonUrl = env.HORIZON_URL;
+        let operationsUrl = `${horizonUrl}/accounts/${publicKey}/operations?limit=${limit}&order=${order}`;
+        if (cursor) {
+          operationsUrl += `&cursor=${cursor}`;
+        }
 
-      if (isNotFoundError) {
-        logger.warn(`SDK failed to fetch operations for ${publicKey}, trying HTTP fallback...`);
-        try {
-          const horizonUrl = env.HORIZON_URL;
-          let operationsUrl = `${horizonUrl}/accounts/${publicKey}/operations?limit=${limit}&order=${order}`;
-          if (cursor) {
-            operationsUrl += `&cursor=${cursor}`;
+        // Use horizon queue for rate-limited requests
+        const response = await horizonQueue.get<any>(operationsUrl, { timeout: 15000 }, 0);
+        if (response && typeof response === 'object' && 'status' in response && 'data' in response) {
+          const httpResponse = response as { status: number; data?: any };
+          if (httpResponse.status === 200 && httpResponse.data?._embedded?.records) {
+            logger.info(` Operations loaded via HTTP for ${publicKey}`);
+            return this.formatOperations(httpResponse.data._embedded.records, publicKey, limit, order);
           }
-
-          // Use horizon queue for rate-limited requests
-          const response = await horizonQueue.get<any>(operationsUrl, { timeout: 10000 }, 0);
-          if (response && typeof response === 'object' && 'status' in response && 'data' in response) {
-            const httpResponse = response as { status: number; data?: any };
-            if (httpResponse.status === 200 && httpResponse.data?._embedded?.records) {
-              return this.formatOperations(httpResponse.data._embedded.records, publicKey, limit, order);
-            }
-          }
-        } catch (httpError: any) {
-          logger.error(`HTTP fallback also failed for operations: ${httpError?.message || String(httpError)}`);
+        }
+      } catch (httpError: any) {
+        if (httpAttempt < 2) {
+          logger.warn(`HTTP operations fetch failed (attempt ${httpAttempt + 1}/3), retrying...`);
+        } else {
+          logger.warn(`HTTP operations fetch failed after 3 attempts, trying SDK fallback...`);
         }
       }
- 
-      logger.error(`❌ getAccountOperations failed: ${error.message}`);
-      throw error;
+    }
+
+    // Fallback to SDK with retries
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (attempt > 0) {
+          const delay = 2000 * attempt; // 2s, 4s delays
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+
+        let builder = server.operations().forAccount(publicKey).limit(limit).order(order);
+        if (cursor) builder = builder.cursor(cursor);
+
+        const ops = await builder.call();
+        logger.info(`✅ Operations loaded via SDK for ${publicKey}`);
+        return this.formatOperations(ops.records, publicKey, limit, order);
+      } catch (error: any) {
+        const isNotFoundError =
+          error?.response?.status === 404 ||
+          error?.constructor?.name === 'NotFoundError' ||
+          (error?.response?.data?.type === 'https://stellar.org/horizon-errors/not_found') ||
+          (error?.response?.data?.status === 404) ||
+          (error?.message && (
+            error.message.toLowerCase().includes('not found') ||
+            error.message.toLowerCase().includes('404')
+          ));
+
+        // For 404, return empty operations (account might not exist or have no operations)
+        if (isNotFoundError) {
+          logger.info(`Account ${publicKey} has no operations (404)`);
+          return this.formatOperations([], publicKey, limit, order);
+        }
+
+        // For other errors, retry unless this is the last attempt
+        if (attempt < 2) {
+          logger.warn(`SDK operations fetch failed (attempt ${attempt + 1}/3), retrying...`);
+          continue;
+        }
+
+        // Last attempt failed
+        logger.error(`❌ getAccountOperations failed after all retries: ${error.message}`);
+        throw error;
+      }
     }
   }
 

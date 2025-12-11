@@ -17,42 +17,74 @@ class SwapService {
   }
 
    
-  private async loadAccountWithFallback(publicKey: string): Promise<any> {
-    try {
-      return await server.loadAccount(publicKey);
-    } catch (error: any) {
-      const isNotFoundError =
-        error?.response?.status === 404 ||
-        error?.constructor?.name === 'NotFoundError' ||
-        (error?.response?.data?.type === 'https://stellar.org/horizon-errors/not_found') ||
-        (error?.response?.data?.status === 404) ||
-        (error?.message && (
-          error.message.toLowerCase().includes('not found') ||
-          error.message.toLowerCase().includes('404')
-        ));
+  private async loadAccountWithFallback(publicKey: string, maxRetries: number = 3): Promise<any> {
+    let lastError: any = null;
+    
+    // Try SDK first with retries
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        if (attempt > 0) {
+          const delay = 2000 * attempt; // 2s, 4s delays
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        return await server.loadAccount(publicKey);
+      } catch (error: any) {
+        lastError = error;
+        const isNotFoundError =
+          error?.response?.status === 404 ||
+          error?.constructor?.name === 'NotFoundError' ||
+          (error?.response?.data?.type === 'https://stellar.org/horizon-errors/not_found') ||
+          (error?.response?.data?.status === 404) ||
+          (error?.message && (
+            error.message.toLowerCase().includes('not found') ||
+            error.message.toLowerCase().includes('404')
+          ));
 
-      if (isNotFoundError) {
-        logger.warn(`SDK failed to load account ${publicKey}, trying HTTP fallback...`);
-        try {
-          const horizonUrl = env.HORIZON_URL;
-          const accountUrl = `${horizonUrl}/accounts/${publicKey}`;
-          const response = await axios.get(accountUrl, { timeout: 10000 });
-          
-          if (response.status === 200 && response.data) {
-            const accountData = response.data;
-            const account = new StellarSdk.Account(publicKey, accountData.sequence);
-            // Manually attach balances from HTTP response since SDK Account doesn't include them
-            // This is needed for balance validation before transactions
-            (account as any).balances = accountData.balances || [];
-            return account;
-          }
-        } catch (httpError: any) {
-          logger.error(`HTTP fallback also failed for account ${publicKey}: ${httpError?.message || String(httpError)}`);
+        // For 404 errors, try HTTP fallback immediately
+        if (isNotFoundError) {
+          break; // Exit retry loop and try HTTP fallback
+        }
+        
+        // For other errors, retry unless this is the last attempt
+        if (attempt < maxRetries - 1) {
+          logger.warn(`SDK account load failed (attempt ${attempt + 1}/${maxRetries}), retrying...`);
+          continue;
         }
       }
-      
-      throw error;
     }
+    
+    // HTTP fallback with retries
+    logger.warn(`SDK failed to load account ${publicKey}, trying HTTP fallback...`);
+    for (let httpAttempt = 0; httpAttempt < 3; httpAttempt++) {
+      try {
+        if (httpAttempt > 0) {
+          const delay = 2000 * httpAttempt; // 2s, 4s delays
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        
+        const horizonUrl = env.HORIZON_URL;
+        const accountUrl = `${horizonUrl}/accounts/${publicKey}`;
+        const response = await axios.get(accountUrl, { timeout: 15000 });
+        
+        if (response.status === 200 && response.data) {
+          const accountData = response.data;
+          const account = new StellarSdk.Account(publicKey, accountData.sequence);
+          // Manually attach balances from HTTP response since SDK Account doesn't include them
+          // This is needed for balance validation before transactions
+          (account as any).balances = accountData.balances || [];
+          logger.info(`✅ Account loaded via HTTP fallback: ${publicKey}`);
+          return account;
+        }
+      } catch (httpError: any) {
+        if (httpAttempt === 2) {
+          logger.error(`HTTP fallback also failed for account ${publicKey} after 3 attempts: ${httpError?.message || String(httpError)}`);
+        } else {
+          logger.warn(`HTTP fallback failed (attempt ${httpAttempt + 1}/3), retrying...`);
+        }
+      }
+    }
+    
+    throw lastError || new Error(`Failed to load account ${publicKey} after all retries`);
   }
 
   /**
@@ -461,60 +493,73 @@ class SwapService {
       
       let finalAccount: any;
       let retries = 0;
-      const maxRetries = 5;
-      
+      const maxRetries = 8; // Increased from 5 to 8
+      const expectedIncrement = actualToCode !== 'native' ? 1 : 0; // Trustline if created
       
       // Try HTTP first (more reliable than SDK after transactions)
-      try {
-        const horizonUrl = env.HORIZON_URL;
-        const accountUrl = `${horizonUrl}/accounts/${publicKey}`;
-        const response = await axios.get(accountUrl, { timeout: 15000 });
-        
-        if (response.status === 200 && response.data) {
-          const accountData = response.data;
-          const httpSequence = accountData.sequence;
+      let httpSuccess = false;
+      for (let httpRetry = 0; httpRetry < 3; httpRetry++) {
+        try {
+          if (httpRetry > 0) {
+            const delay = 3000 * httpRetry; // Exponential backoff: 3s, 6s, 9s
+            logger.info(`Retrying HTTP account load (attempt ${httpRetry + 1}/3) after ${delay}ms delay...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
           
-           
-          const seqNum = BigInt(httpSequence);
-          const initSeq = BigInt(initialSequence);
-          const expectedIncrement = actualToCode !== 'native' ? 1 : 0; // Trustline if created
+          const horizonUrl = env.HORIZON_URL;
+          const accountUrl = `${horizonUrl}/accounts/${publicKey}`;
+          const response = await axios.get(accountUrl, { timeout: 20000 }); // Increased timeout
           
-          if (seqNum <= initSeq && expectedIncrement > 0) {
-            logger.warn(`Sequence number not updated yet (${httpSequence} <= ${initialSequence}). Waiting and retrying...`);
-            // Wait and retry
-            await new Promise(resolve => setTimeout(resolve, 3000));
-            const retryResponse = await axios.get(accountUrl, { timeout: 15000 });
-            if (retryResponse.status === 200 && retryResponse.data) {
-              const retrySequence = BigInt(retryResponse.data.sequence);
-              if (retrySequence <= initSeq && expectedIncrement > 0) {
-                throw new Error(`Account sequence not updated after trustline creation. Expected increment of at least ${expectedIncrement}, but sequence is still ${retryResponse.data.sequence} (was ${initialSequence}). Please wait a few seconds and try again.`);
-              }
-              const sequenceStr = String(retryResponse.data.sequence);
-              finalAccount = new StellarSdk.Account(publicKey, sequenceStr);
-              if (retryResponse.data.balances && Array.isArray(retryResponse.data.balances)) {
-                (finalAccount as any).balances = retryResponse.data.balances;
-              }
-              logger.info(` Account loaded via HTTP fallback after retry: sequence=${sequenceStr}`);
-            } else {
-              throw new Error(`Failed to load account after retry`);
+          if (response.status === 200 && response.data) {
+            const accountData = response.data;
+            const httpSequence = accountData.sequence;
+            
+            const seqNum = BigInt(httpSequence);
+            const initSeq = BigInt(initialSequence);
+            
+            // If we expect a sequence increment (trustline created) but haven't seen it yet
+            if (seqNum <= initSeq && expectedIncrement > 0 && httpRetry < 2) {
+              logger.warn(`Sequence number not updated yet (${httpSequence} <= ${initialSequence}). Will retry...`);
+              continue; // Retry
             }
-          } else {
+            
+            // If sequence still hasn't updated after all retries, but we're close, use it anyway
+            // This handles cases where Horizon is slow but the transaction will still work
+            if (seqNum <= initSeq && expectedIncrement > 0) {
+              logger.warn(`Sequence number still not updated (${httpSequence} <= ${initialSequence}), but proceeding with current sequence`);
+            }
+            
             const sequenceStr = String(httpSequence);
             finalAccount = new StellarSdk.Account(publicKey, sequenceStr);
             if (accountData.balances && Array.isArray(accountData.balances)) {
               (finalAccount as any).balances = accountData.balances;
             }
-            logger.info(` Account loaded via HTTP: sequence=${sequenceStr}`);
+            logger.info(`✅ Account loaded via HTTP: sequence=${sequenceStr}`);
+            httpSuccess = true;
+            break;
+          }
+        } catch (httpError: any) {
+          const isNotFound = httpError?.response?.status === 404 || 
+                           httpError?.message?.toLowerCase().includes('not found');
+          
+          if (isNotFound && httpRetry < 2) {
+            logger.warn(`HTTP account load failed (attempt ${httpRetry + 1}/3): ${httpError?.message || String(httpError)}. Retrying...`);
+            continue;
+          }
+          
+          if (httpRetry === 2) {
+            logger.warn(`HTTP account load failed after 3 attempts, trying SDK fallback: ${httpError?.message || String(httpError)}`);
           }
         }
-      } catch (httpError: any) {
-        logger.warn(`HTTP fallback failed, trying SDK: ${httpError?.message || String(httpError)}`);
-        
-        // Fallback to SDK with retries
+      }
+      
+      // Fallback to SDK with retries if HTTP failed
+      if (!httpSuccess) {
         while (retries < maxRetries) {
           try {
             if (retries > 0) {
-              const delay = 2000 * retries;
+              const delay = Math.min(3000 * Math.pow(2, retries - 1), 15000); // Exponential backoff: 3s, 6s, 12s, max 15s
+              logger.info(`Retrying SDK account load (attempt ${retries + 1}/${maxRetries}) after ${delay}ms delay...`);
               await new Promise(resolve => setTimeout(resolve, delay));
             }
             
@@ -523,19 +568,52 @@ class SwapService {
             
             const seqNum = BigInt(newSequence);
             const initSeq = BigInt(initialSequence);
-            if (seqNum <= initSeq && retries < maxRetries - 1) {
+            
+            // If sequence hasn't updated and we expect it to, retry unless this is the last attempt
+            if (seqNum <= initSeq && expectedIncrement > 0 && retries < maxRetries - 1) {
               retries++;
               continue;
             }
             
-            logger.info(` Account loaded via SDK: sequence=${newSequence}`);
+            // If sequence still hasn't updated on last retry, use it anyway (transaction might still work)
+            if (seqNum <= initSeq && expectedIncrement > 0 && retries === maxRetries - 1) {
+              logger.warn(`Sequence number still not updated (${newSequence} <= ${initialSequence}), but proceeding with current sequence`);
+            }
+            
+            logger.info(`✅ Account loaded via SDK: sequence=${newSequence}`);
             break;
           } catch (sdkError: any) {
             retries++;
+            const isNotFound = sdkError?.response?.status === 404 || 
+                             sdkError?.constructor?.name === 'NotFoundError' ||
+                             sdkError?.message?.toLowerCase().includes('not found');
+            
             if (retries >= maxRetries) {
-              logger.error(`  Failed to load account after ${maxRetries} SDK retries and HTTP fallback failed`);
-              throw new Error(`Failed to load account. Please try again in a few seconds.`);
+              // Last attempt: try HTTP one more time as final fallback
+              logger.warn(`SDK failed after ${maxRetries} attempts, trying final HTTP fallback...`);
+              try {
+                const horizonUrl = env.HORIZON_URL;
+                const accountUrl = `${horizonUrl}/accounts/${publicKey}`;
+                const finalResponse = await axios.get(accountUrl, { timeout: 20000 });
+                
+                if (finalResponse.status === 200 && finalResponse.data) {
+                  const accountData = finalResponse.data;
+                  const sequenceStr = String(accountData.sequence);
+                  finalAccount = new StellarSdk.Account(publicKey, sequenceStr);
+                  if (accountData.balances && Array.isArray(accountData.balances)) {
+                    (finalAccount as any).balances = accountData.balances;
+                  }
+                  logger.info(`✅ Account loaded via final HTTP fallback: sequence=${sequenceStr}`);
+                  break;
+                }
+              } catch (finalHttpError: any) {
+                logger.error(`  Final HTTP fallback also failed: ${finalHttpError?.message || String(finalHttpError)}`);
+              }
+              
+              logger.error(`  Failed to load account after ${maxRetries} SDK retries and all HTTP fallbacks`);
+              throw new Error(`Failed to load account. The Horizon API may be experiencing delays. Please wait a few seconds and try again.`);
             }
+            
             logger.warn(`SDK account load failed (attempt ${retries}/${maxRetries}): ${sdkError?.message || String(sdkError)}`);
           }
         }
@@ -644,24 +722,38 @@ class SwapService {
         // Log detailed error information
         logger.error(`❌ Transaction submission failed`);
         
-        // Extract error details
+        // Extract error details - check multiple possible error formats
         let detailedMessage = submitError?.message || 'Transaction submission failed';
         let resultCodes: any = null;
+        let errorData: any = null;
         
+        // Check for error in response.data
         if (submitError?.response?.data) {
-          const errorData = submitError.response.data;
-          
-          // Log full error details
-          logger.error(`Transaction error details:`, {
-            status: submitError.response.status,
-            type: errorData.type,
-            title: errorData.title,
-            detail: errorData.detail,
-            extras: errorData.extras,
-            resultCodes: errorData.extras?.result_codes,
-          });
-          
-          // Extract operation error code
+          errorData = submitError.response.data;
+        }
+        // Check for error in response (some SDK versions put it directly in response)
+        else if (submitError?.response) {
+          errorData = submitError.response;
+        }
+        // Check for error directly on the error object
+        else if (submitError?.data) {
+          errorData = submitError.data;
+        }
+        
+        // Log full error details for debugging
+        logger.error(`Transaction error details:`, {
+          status: submitError?.response?.status || submitError?.status || 'unknown',
+          type: errorData?.type,
+          title: errorData?.title,
+          detail: errorData?.detail,
+          message: errorData?.message,
+          extras: errorData?.extras,
+          resultCodes: errorData?.extras?.result_codes,
+          fullError: JSON.stringify(submitError, Object.getOwnPropertyNames(submitError), 2),
+        });
+        
+        // Extract operation error code
+        if (errorData) {
           resultCodes = errorData.extras?.result_codes;
           if (resultCodes) {
             const opError = resultCodes.operations?.[0];
@@ -692,17 +784,26 @@ class SwapService {
               detailedMessage = errorData.detail;
             } else if (errorData.title) {
               detailedMessage = errorData.title;
+            } else if (errorData.message) {
+              detailedMessage = errorData.message;
             }
+          } else if (errorData.detail) {
+            detailedMessage = errorData.detail;
+          } else if (errorData.title) {
+            detailedMessage = errorData.title;
+          } else if (errorData.message) {
+            detailedMessage = errorData.message;
           }
         }
         
         // Create enhanced error with detailed message
         const enhancedError = new Error(detailedMessage);
-        (enhancedError as any).response = submitError?.response;
-        (enhancedError as any).status = submitError?.response?.status || 400;
+        (enhancedError as any).response = submitError?.response || errorData;
+        (enhancedError as any).status = submitError?.response?.status || submitError?.status || 400;
         (enhancedError as any).operationError = resultCodes?.operations?.[0];
         (enhancedError as any).transactionError = resultCodes?.transaction;
         (enhancedError as any).resultCodes = resultCodes;
+        (enhancedError as any).errorData = errorData;
         
         throw enhancedError;
       }
@@ -758,13 +859,28 @@ class SwapService {
         expectedOutput: outputAmount.toFixed(7),
       };
     } catch (err: any) {
-      if (err?.response?.status === 400 && err?.response?.data) {
-        const errorData = err.response.data;
-        const resultCodes = errorData.extras?.result_codes;
+      // Check for 400 errors with detailed information
+      const status = err?.response?.status || err?.status || (err?.response?.data?.status);
+      const is400Error = status === 400;
+      
+      // Try to extract error data from multiple possible locations
+      let errorData: any = null;
+      if (err?.response?.data) {
+        errorData = err.response.data;
+      } else if (err?.response) {
+        errorData = err.response;
+      } else if (err?.data) {
+        errorData = err.data;
+      } else if (err?.errorData) {
+        errorData = err.errorData;
+      }
+      
+      if (is400Error && errorData) {
+        const resultCodes = errorData.extras?.result_codes || err?.resultCodes;
         const operationsResultCodes = resultCodes?.operations || [];
         const transactionResultCode = resultCodes?.transaction || 'unknown';
 
-        let errorMessage = 'Transaction failed';
+        let errorMessage = err?.message || errorData?.detail || errorData?.title || errorData?.message || 'Transaction failed';
         
         if (transactionResultCode === 'tx_failed') {
           if (operationsResultCodes.length > 0) {
@@ -787,9 +903,9 @@ class SwapService {
               errorMessage = `Transaction failed: ${opError}. Please check your balance and account status.`;
             }
           } else {
-            errorMessage = 'Transaction failed. Please check your balance and account status.';
+            errorMessage = errorMessage || 'Transaction failed. Please check your balance and account status.';
           }
-        } else {
+        } else if (transactionResultCode !== 'unknown') {
           errorMessage = `Transaction failed: ${transactionResultCode}`;
         }
 
@@ -797,11 +913,14 @@ class SwapService {
           transactionCode: transactionResultCode,
           operationsCodes: operationsResultCodes,
           fullError: errorData,
+          errorMessage,
         });
 
         const enhancedError = new Error(errorMessage);
-        (enhancedError as any).response = err.response;
+        (enhancedError as any).response = err?.response || errorData;
         (enhancedError as any).status = 400;
+        (enhancedError as any).resultCodes = resultCodes;
+        (enhancedError as any).errorData = errorData;
         throw enhancedError;
       }
 
@@ -812,36 +931,39 @@ class SwapService {
       console.error('=== SWAP WITH POOL ERROR DETAILS ===');
       console.error('Error message:', err?.message || 'Unknown error');
       console.error('Error type:', err?.name || typeof err);
+      console.error('Error status:', status);
       
-      if (err?.response) {
-        console.error('Response status:', err.response.status);
-        console.error('Response statusText:', err.response.statusText);
+      // Try to extract error from multiple locations
+      const errorToLog = errorData || err?.response || err;
+      if (errorToLog) {
+        console.error('Error data:', JSON.stringify(errorToLog, Object.getOwnPropertyNames(errorToLog), 2));
         
-        if (err.response.data) {
-          console.error('Response data:', JSON.stringify(err.response.data, null, 2));
+        if (errorToLog.extras) {
+          console.error('Extras:', JSON.stringify(errorToLog.extras, null, 2));
           
-          if (err.response.data.extras) {
-            console.error('Extras:', JSON.stringify(err.response.data.extras, null, 2));
-            
-            if (err.response.data.extras.result_codes) {
-              console.error('Result codes:', JSON.stringify(err.response.data.extras.result_codes, null, 2));
-              console.error('Transaction result:', err.response.data.extras.result_codes.transaction);
-              console.error('Operation results:', err.response.data.extras.result_codes.operations);
-            }
-            
-            if (err.response.data.extras.invalid_field) {
-              console.error('Invalid field:', err.response.data.extras.invalid_field);
-            }
-            
-            if (err.response.data.extras.reason) {
-              console.error('Reason:', err.response.data.extras.reason);
-            }
+          if (errorToLog.extras.result_codes) {
+            console.error('Result codes:', JSON.stringify(errorToLog.extras.result_codes, null, 2));
+            console.error('Transaction result:', errorToLog.extras.result_codes.transaction);
+            console.error('Operation results:', errorToLog.extras.result_codes.operations);
+          }
+          
+          if (errorToLog.extras.invalid_field) {
+            console.error('Invalid field:', errorToLog.extras.invalid_field);
+          }
+          
+          if (errorToLog.extras.reason) {
+            console.error('Reason:', errorToLog.extras.reason);
           }
         }
       }
       
       // Also use logger for simplified view
-      logger.error(`swapWithPool error:`, err);
+      logger.error(`swapWithPool error:`, {
+        message: err?.message,
+        status: status,
+        errorData: errorData,
+        stack: err?.stack,
+      });
       throw err;
     }
   }
