@@ -157,13 +157,30 @@ class SwapService {
     fromCode: string
   ): Promise<string> {
     try {
+      // Validate environment variables
+      if (!env.PI_TEST_USER_PUBLIC_KEY) {
+        throw new Error('PI_TEST_USER_PUBLIC_KEY is not set in environment variables. Cannot collect platform fee.');
+      }
+      
+      if (!env.PLATFORM_SWAP_FEE_PERCENT) {
+        logger.warn('PLATFORM_SWAP_FEE_PERCENT not set, skipping fee collection');
+        return '0';
+      }
+      
       const user = StellarSdk.Keypair.fromSecret(userSecret);
       const publicKey = user.publicKey();
       
-      // Calculate platform fee (0.3% of input amount)
+      // Calculate platform fee from environment variable
       const swapFeePercent = parseFloat(env.PLATFORM_SWAP_FEE_PERCENT) / 100;
       const inputAmountNum = parseFloat(inputAmount);
       const swapFeeAmount = (inputAmountNum * swapFeePercent).toFixed(7);
+      const swapFeeNum = parseFloat(swapFeeAmount);
+      
+      // Skip fee collection if fee amount is too small (less than 0.0000001)
+      if (swapFeeNum < 0.0000001) {
+        logger.info(` Platform fee too small (${swapFeeAmount} Test Pi), skipping collection`);
+        return swapFeeAmount;
+      }
       
       // Load account to check balance
       const account = await this.loadAccountWithFallback(publicKey);
@@ -177,60 +194,27 @@ class SwapService {
       }
       
       const baseFeeNum = parseFloat(baseFee) / 10000000;
-      const swapFeeNum = parseFloat(swapFeeAmount);
       
-      // Balance validation
-      if (fromCode === 'native') {
-        const nativeBalance = account.balances.find((b: any) => b.asset_type === 'native');
-        if (nativeBalance) {
-          const balance = parseFloat(nativeBalance.balance);
-          const baseReserve = 1.0;
-          const subentryCount = (account as any).subentry_count || 
-            account.balances.filter((b: any) => 
-              b.asset_type !== 'native' && b.asset_type !== 'liquidity_pool_shares'
-            ).length;
-          const subentryReserve = 0.5;
-          const totalReserve = baseReserve + (subentryCount * subentryReserve);
-          const requiredBalance = inputAmountNum + swapFeeNum + baseFeeNum + totalReserve;
-          
-          if (balance < requiredBalance) {
-            throw new Error(
-              `Insufficient balance for swap. Required: ${requiredBalance.toFixed(7)} Test Pi (Input: ${inputAmount} + Platform fee: ${swapFeeAmount} + Base fee: ${baseFeeNum.toFixed(7)} + Reserve: ${totalReserve.toFixed(7)}), Available: ${balance.toFixed(7)} Test Pi`
-            );
-          }
-        } else {
-          throw new Error('No Test Pi balance found');
+      // Balance validation - only check for fee payment (not the swap amount, as swap already succeeded)
+      const nativeBalance = account.balances.find((b: any) => b.asset_type === 'native');
+      if (nativeBalance) {
+        const balance = parseFloat(nativeBalance.balance);
+        const baseReserve = 1.0;
+        const subentryCount = (account as any).subentry_count || 
+          account.balances.filter((b: any) => 
+            b.asset_type !== 'native' && b.asset_type !== 'liquidity_pool_shares'
+          ).length;
+        const subentryReserve = 0.5;
+        const totalReserve = baseReserve + (subentryCount * subentryReserve);
+        const requiredBalance = swapFeeNum + baseFeeNum + totalReserve;
+        
+        if (balance < requiredBalance) {
+          throw new Error(
+            `Insufficient balance for platform fee. Required: ${requiredBalance.toFixed(7)} Test Pi (Platform fee: ${swapFeeAmount} + Base fee: ${baseFeeNum.toFixed(7)} + Reserve: ${totalReserve.toFixed(7)}), Available: ${balance.toFixed(7)} Test Pi`
+          );
         }
       } else {
-        // For non-native input, check token balance and native balance for fees
-        const assetBalance = account.balances.find(
-          (b: any) => b.asset_code && b.asset_code.toUpperCase() === fromCode.toUpperCase()
-        );
-        if (!assetBalance || parseFloat(assetBalance.balance) < inputAmountNum) {
-          throw new Error(`Insufficient ${fromCode} balance. Required: ${inputAmount}, Available: ${assetBalance?.balance || 0}`);
-        }
-        
-        // Check native balance for platform fee
-        const nativeBalance = account.balances.find((b: any) => b.asset_type === 'native');
-        if (nativeBalance) {
-          const balance = parseFloat(nativeBalance.balance);
-          const baseReserve = 1.0;
-          const subentryCount = (account as any).subentry_count || 
-            account.balances.filter((b: any) => 
-              b.asset_type !== 'native' && b.asset_type !== 'liquidity_pool_shares'
-            ).length;
-          const subentryReserve = 0.5;
-          const totalReserve = baseReserve + (subentryCount * subentryReserve);
-          const requiredBalance = swapFeeNum + baseFeeNum + totalReserve;
-          
-          if (balance < requiredBalance) {
-            throw new Error(
-              `Insufficient Test Pi for swap fee. Required: ${requiredBalance.toFixed(7)} Test Pi (Platform fee: ${swapFeeAmount} + Base fee: ${baseFeeNum.toFixed(7)} + Reserve: ${totalReserve.toFixed(7)}), Available: ${balance.toFixed(7)} Test Pi`
-            );
-          }
-        } else {
-          throw new Error('No Test Pi balance found for swap fee');
-        }
+        throw new Error('No Test Pi balance found for platform fee');
       }
       
       // Reload account right before building to ensure fresh sequence number
@@ -249,7 +233,7 @@ class SwapService {
         })
       );
       
-      logger.info(`💰 Collecting swap platform fee: ${swapFeeAmount} Test Pi (0.3% of ${inputAmount} ${fromCode})`);
+      logger.info(`💰 Collecting swap platform fee: ${swapFeeAmount} Test Pi (${env.PLATFORM_SWAP_FEE_PERCENT}% of ${inputAmount} ${fromCode})`);
       
       const feeTx = feeTxBuilder.setTimeout(300).build();
       feeTx.sign(user);
@@ -273,6 +257,15 @@ class SwapService {
       return swapFeeAmount;
     } catch (err: any) {
       logger.error(`❌ Swap fee collection failed: ${err.message || String(err)}`);
+      // Log detailed error for debugging
+      logger.error(`Fee collection error details:`, {
+        message: err?.message,
+        stack: err?.stack,
+        response: err?.response?.data,
+        status: err?.response?.status,
+        PI_TEST_USER_PUBLIC_KEY: env.PI_TEST_USER_PUBLIC_KEY ? 'set' : 'NOT SET',
+        PLATFORM_SWAP_FEE_PERCENT: env.PLATFORM_SWAP_FEE_PERCENT || 'NOT SET',
+      });
       throw err;
     }
   }
@@ -353,7 +346,7 @@ class SwapService {
         }
       }
 
-      // Calculate platform fee (0.3% of input amount)
+      // Calculate platform fee from environment variable
       const platformFeePercent = parseFloat(env.PLATFORM_SWAP_FEE_PERCENT) / 100;
       const platformFeeAmount = (input * platformFeePercent).toFixed(7);
       const poolFeePercent = pool.fee_bp / 100;
@@ -370,7 +363,7 @@ class SwapService {
         minOut,
         slippagePercent,
         fee: pool.fee_bp / 100, // Pool fee percentage (for backward compatibility)
-        platformFee: platformFeePercent, // Platform fee percentage (0.3%)
+        platformFee: platformFeePercent, // Platform fee percentage from env
         platformFeeAmount, // Platform fee amount in input token
         totalFee: totalFeePercent, // Total fee percentage (pool + platform)
         availableBalance: availableBalance !== null ? availableBalance.toFixed(7) : null,
