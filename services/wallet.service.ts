@@ -170,7 +170,7 @@ export class WalletService {
       logger.info(`Cleared public_key from User table for user ${userId}`);
     } catch (error: any) {
       logger.warn(`Could not clear User.public_key (may already be null or user not found): ${error?.message || String(error)}`);
-      // Continue anyway
+       
     }
 
     // Generate new wallet
