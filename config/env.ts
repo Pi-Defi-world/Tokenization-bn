@@ -17,7 +17,7 @@ const env = {
     // Platform Fees
     PLATFORM_MINT_FEE: process.env.PLATFORM_MINT_FEE as string || "100",
     PLATFORM_POOL_FEE: process.env.PLATFORM_POOL_FEE as string || "10",
-    PLATFORM_SWAP_FEE_PERCENT: process.env.PLATFORM_SWAP_FEE_PERCENT as string || "0.3",
+    PLATFORM_SWAP_FEE_AMOUNT: process.env.PLATFORM_SWAP_FEE_AMOUNT as string || "0.1", // Fixed fee in Pi (not percentage)
     // Horizon API Endpoints
     horizon: {
         // Official Stellar Horizon API

@@ -162,18 +162,16 @@ class SwapService {
         throw new Error('PI_TEST_USER_PUBLIC_KEY is not set in environment variables. Cannot collect platform fee.');
       }
       
-      if (!env.PLATFORM_SWAP_FEE_PERCENT) {
-        logger.warn('PLATFORM_SWAP_FEE_PERCENT not set, skipping fee collection');
+      if (!env.PLATFORM_SWAP_FEE_AMOUNT) {
+        logger.warn('PLATFORM_SWAP_FEE_AMOUNT not set, skipping fee collection');
         return '0';
       }
       
       const user = StellarSdk.Keypair.fromSecret(userSecret);
       const publicKey = user.publicKey();
       
-      // Calculate platform fee from environment variable
-      const swapFeePercent = parseFloat(env.PLATFORM_SWAP_FEE_PERCENT) / 100;
-      const inputAmountNum = parseFloat(inputAmount);
-      const swapFeeAmount = (inputAmountNum * swapFeePercent).toFixed(7);
+      // Get fixed platform fee amount from environment variable (in Pi)
+      const swapFeeAmount = parseFloat(env.PLATFORM_SWAP_FEE_AMOUNT).toFixed(7);
       const swapFeeNum = parseFloat(swapFeeAmount);
       
       // Skip fee collection if fee amount is too small (less than 0.0000001)
@@ -233,7 +231,7 @@ class SwapService {
         })
       );
       
-      logger.info(`💰 Collecting swap platform fee: ${swapFeeAmount} Test Pi (${env.PLATFORM_SWAP_FEE_PERCENT}% of ${inputAmount} ${fromCode})`);
+      logger.info(`💰 Collecting swap platform fee: ${swapFeeAmount} Test Pi (fixed fee)`);
       
       const feeTx = feeTxBuilder.setTimeout(300).build();
       feeTx.sign(user);
@@ -264,7 +262,7 @@ class SwapService {
         response: err?.response?.data,
         status: err?.response?.status,
         PI_TEST_USER_PUBLIC_KEY: env.PI_TEST_USER_PUBLIC_KEY ? 'set' : 'NOT SET',
-        PLATFORM_SWAP_FEE_PERCENT: env.PLATFORM_SWAP_FEE_PERCENT || 'NOT SET',
+        PLATFORM_SWAP_FEE_AMOUNT: env.PLATFORM_SWAP_FEE_AMOUNT || 'NOT SET',
       });
       throw err;
     }
@@ -346,14 +344,12 @@ class SwapService {
         }
       }
 
-      // Calculate platform fee from environment variable
-      const platformFeePercent = parseFloat(env.PLATFORM_SWAP_FEE_PERCENT) / 100;
-      const platformFeeAmount = (input * platformFeePercent).toFixed(7);
+      // Get fixed platform fee amount from environment variable (in Pi)
+      const platformFeeAmount = env.PLATFORM_SWAP_FEE_AMOUNT ? parseFloat(env.PLATFORM_SWAP_FEE_AMOUNT).toFixed(7) : '0';
       const poolFeePercent = pool.fee_bp / 100;
-      const totalFeePercent = poolFeePercent + platformFeePercent;
       
       logger.info(
-        ` Quote result: expect ≈ ${outputAmount.toFixed(7)} ${to.code}, min after slippage: ${minOut}${availableBalance !== null ? `, available: ${availableBalance.toFixed(7)}` : ''}`
+        ` Quote result: expect ≈ ${outputAmount.toFixed(7)} ${to.code}, min after slippage: ${minOut}${availableBalance !== null ? `, available: ${availableBalance.toFixed(7)}` : ''}, platform fee: ${platformFeeAmount} Test Pi`
       );
 
       return {
@@ -363,9 +359,9 @@ class SwapService {
         minOut,
         slippagePercent,
         fee: pool.fee_bp / 100, // Pool fee percentage (for backward compatibility)
-        platformFee: platformFeePercent, // Platform fee percentage from env
-        platformFeeAmount, // Platform fee amount in input token
-        totalFee: totalFeePercent, // Total fee percentage (pool + platform)
+        platformFee: null, // No longer a percentage
+        platformFeeAmount, // Fixed platform fee amount in Pi
+        totalFee: poolFeePercent, // Only pool fee percentage (platform fee is fixed amount)
         availableBalance: availableBalance !== null ? availableBalance.toFixed(7) : null,
         isSufficient,
         balanceError,
@@ -449,10 +445,9 @@ class SwapService {
         await new Promise(resolve => setTimeout(resolve, 2000));  
       }
 
-      // Calculate platform fee (will be collected AFTER successful swap)
-      const swapFeePercent = parseFloat(env.PLATFORM_SWAP_FEE_PERCENT) / 100;
+      // Get fixed platform fee amount (will be collected AFTER successful swap)
       const input = parseFloat(sendAmount);
-      const swapFeeAmount = (input * swapFeePercent).toFixed(7);
+      const swapFeeAmount = env.PLATFORM_SWAP_FEE_AMOUNT ? parseFloat(env.PLATFORM_SWAP_FEE_AMOUNT).toFixed(7) : '0';
 
       const fee = pool.fee_bp / 10000;
       const x = parseFloat(resA.amount);
@@ -868,10 +863,20 @@ class SwapService {
         errorData = err.errorData;
       }
       
+      // Extract result codes early for better error messages
+      let resultCodes: any = null;
+      let operationsResultCodes: string[] = [];
+      let transactionResultCode: string = 'unknown';
+      
+      if (errorData) {
+        resultCodes = errorData.extras?.result_codes || err?.resultCodes;
+        if (resultCodes) {
+          operationsResultCodes = resultCodes.operations || [];
+          transactionResultCode = resultCodes.transaction || 'unknown';
+        }
+      }
+      
       if (is400Error && errorData) {
-        const resultCodes = errorData.extras?.result_codes || err?.resultCodes;
-        const operationsResultCodes = resultCodes?.operations || [];
-        const transactionResultCode = resultCodes?.transaction || 'unknown';
 
         let errorMessage = err?.message || errorData?.detail || errorData?.title || errorData?.message || 'Transaction failed';
         
@@ -902,12 +907,18 @@ class SwapService {
           errorMessage = `Transaction failed: ${transactionResultCode}`;
         }
 
-        logger.error(`Transaction failed for account ${publicKey}:`, {
-          transactionCode: transactionResultCode,
-          operationsCodes: operationsResultCodes,
-          fullError: errorData,
-          errorMessage,
-        });
+        // Log error with proper serialization
+        logger.error(`Transaction failed for account ${publicKey}:`);
+        logger.error(`  Transaction code: ${transactionResultCode}`);
+        logger.error(`  Operation codes: ${JSON.stringify(operationsResultCodes)}`);
+        logger.error(`  Error message: ${errorMessage}`);
+        if (errorData) {
+          try {
+            logger.error(`  Full error data: ${JSON.stringify(errorData, null, 2)}`);
+          } catch (stringifyError) {
+            logger.error(`  Full error data (serialization failed): ${String(errorData)}`);
+          }
+        }
 
         const enhancedError = new Error(errorMessage);
         (enhancedError as any).response = err?.response || errorData;
@@ -950,13 +961,17 @@ class SwapService {
         }
       }
       
-      // Also use logger for simplified view
-      logger.error(`swapWithPool error:`, {
-        message: err?.message,
-        status: status,
-        errorData: errorData,
-        stack: err?.stack,
-      });
+      // Also use logger for simplified view with proper serialization
+      try {
+        logger.error(`swapWithPool error:`, {
+          message: err?.message,
+          status: status,
+          errorData: errorData ? JSON.stringify(errorData, null, 2) : null,
+          stack: err?.stack,
+        });
+      } catch (logError) {
+        logger.error(`swapWithPool error (serialization failed): ${err?.message || String(err)}`);
+      }
       throw err;
     }
   }
@@ -1305,10 +1320,9 @@ class SwapService {
         await this.ensureTrustline(userSecret, to.code, to.issuer);
       }
 
-      // Calculate platform fee (will be collected AFTER successful swap)
-      const swapFeePercent = parseFloat(env.PLATFORM_SWAP_FEE_PERCENT) / 100;
+      // Get fixed platform fee amount (will be collected AFTER successful swap)
       const input = parseFloat(sendAmount);
-      const swapFeeAmount = (input * swapFeePercent).toFixed(7);
+      const swapFeeAmount = env.PLATFORM_SWAP_FEE_AMOUNT ? parseFloat(env.PLATFORM_SWAP_FEE_AMOUNT).toFixed(7) : '0';
 
       const fromAsset =
         from.code === 'native' ? StellarSdk.Asset.native() : getAsset(from.code, from.issuer!);
