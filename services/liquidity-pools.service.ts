@@ -199,7 +199,10 @@ export class PoolService {
       logger.info(`🔹 Pool found: ${pool.id} | Assets: ${pool.reserves.map((r: any) => r.asset).join(' & ')}`);
       return pool;
     } catch (err: any) {
-      logger.error(`❌ Error fetching liquidity pool by ID (${liquidityPoolId}):`, JSON.stringify(err.response?.data || err, null, 2));
+      logger.error(
+        `❌ Error fetching liquidity pool by ID (${liquidityPoolId}):`,
+        JSON.stringify(err.response?.data || err, null, 2)
+      );
       throw err;
     }
   }
@@ -322,7 +325,7 @@ export class PoolService {
         earnedFees: (parseFloat(res.amount) * userPercentage).toFixed(7),
       }));
   
-      logger.info(`💰 Rewards calculated for ${userPublicKey}`);
+      logger.info(`� Rewards calculated for ${userPublicKey}`);
       return { poolId, userShares, totalShares, userPercentage, rewards };
     } catch (err: any) {
       logger.error('❌ Error fetching pool rewards:', JSON.stringify(err.response?.data || err, null, 2));
@@ -333,39 +336,43 @@ export class PoolService {
   public async getUserLiquidityPools(userPublicKey: string) {
     try {
       logger.info(`🔹 Fetching liquidity pools for user: ${userPublicKey}`);
-  
+
       const account = await server.loadAccount(userPublicKey);
 
-      const lpBalances = account.balances.filter(
-        (b: any) => b.liquidity_pool_id
-      );
-  
+       const lpBalances = account.balances.filter((b: any) => b.liquidity_pool_id);
+
       if (lpBalances.length === 0) {
-        logger.info(`ℹ️ User has no liquidity pool shares`);
+        logger.info(`🔵 User has no liquidity pool shares`);
         return [];
       }
-      const userPools = [];
-      for (const lp of lpBalances) {
+
+      const poolPromises = lpBalances.map(async (lp: any) => {
         const poolId = lp.liquidity_pool_id;
         try {
           const pool = await this.getLiquidityPoolById(poolId);
-          userPools.push({
+          return {
             poolId,
             userShare: lp.balance,
             totalShares: pool.total_shares,
             assets: pool.reserves.map((r: any) => r.asset),
             reserves: pool.reserves.map((r: any) => `${r.asset}: ${r.amount}`),
             fee: `${pool.fee_bp / 100}%`,
-          });
+          };
         } catch (e) {
           logger.warn(`⚠️ Unable to fetch pool ${poolId}`);
+          return null;
         }
-      }
-  
-      logger.success(`✅ Found ${userPools.length} user liquidity pools`);
+      });
+
+      const userPools = (await Promise.all(poolPromises)).filter(Boolean) as any[];
+
+      logger.success(`🔵 Found ${userPools.length} user liquidity pools`);
       return userPools;
     } catch (err: any) {
-      logger.error(`❌ Error fetching user liquidity pools:`, JSON.stringify(err.response?.data || err, null, 2));
+      logger.error(
+        `🔴 Error fetching user liquidity pools:`,
+        JSON.stringify(err.response?.data || err, null, 2)
+      );
       throw err;
     }
   }

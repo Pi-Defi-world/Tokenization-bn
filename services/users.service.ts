@@ -54,6 +54,16 @@ class UsersService {
       throw error;
     }
   }
+
+  async setPublicKey(userId: string, publicKey: string): Promise<IUser> {
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { public_key: publicKey },
+      { new: true }
+    );
+    if (!user) throw new Error('User not found');
+    return user;
+  }
 }
 
 export const usersService = new UsersService();

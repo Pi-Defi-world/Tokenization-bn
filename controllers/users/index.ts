@@ -2,6 +2,13 @@ import { Request, Response } from 'express';
 import { usersService } from '../../services/users.service';
 import { logger } from '../../utils/logger';
 
+export const getMe = async (req: Request, res: Response): Promise<any> => {
+  const currentUser = (req as any).currentUser;
+  if (!currentUser) {
+    return res.status(401).json({ message: 'Not authenticated' });
+  }
+  return res.status(200).json({ user: currentUser });
+};
 
 export const handleSignInUser = async (req: Request, res: Response): Promise<any> => {
     const { authResult } = req.body;

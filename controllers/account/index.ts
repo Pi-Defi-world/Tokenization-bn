@@ -1,8 +1,27 @@
 import { Request, Response } from 'express';
 import { logger } from '../../utils/logger';
 import { AccountService } from '../../services/account.service';
+import { usersService } from '../../services/users.service';
 
 const accountService = new AccountService();
+
+export const linkWallet = async (req: Request, res: Response) => {
+  try {
+    const currentUser = (req as any).currentUser;
+    if (!currentUser) {
+      return res.status(401).json({ message: 'Not authenticated' });
+    }
+    const { publicKey } = req.body || {};
+    if (!publicKey || typeof publicKey !== 'string') {
+      return res.status(400).json({ message: 'publicKey is required and must be a string' });
+    }
+    const user = await usersService.setPublicKey(currentUser._id.toString(), publicKey);
+    return res.status(200).json({ user });
+  } catch (err: any) {
+    logger.error('❌ linkWallet failed:', err);
+    return res.status(500).json({ message: 'Failed to link wallet', error: err.message });
+  }
+};
 
 export const importAccount = async (req: Request, res: Response) => {
   try {

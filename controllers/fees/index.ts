@@ -35,7 +35,12 @@ export const updateFee = async (req: Request, res: Response) => {
     const { key } = req.params;
     const updates = req.body;
 
-    const updated = await feeService.updateFee(key, updates);
+    const feeKey: string = Array.isArray(key) ? key[0] : (key ?? '');
+    if (!feeKey) {
+      return res.status(400).json({ success: false, message: 'Fee key is required' });
+    }
+
+    const updated = await feeService.updateFee(feeKey, updates);
     res.json({ success: true, fee: updated });
   } catch (err: any) {
     res.status(400).json({ success: false, message: err.message });
