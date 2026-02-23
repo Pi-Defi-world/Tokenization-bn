@@ -28,14 +28,12 @@ class UsersService {
         throw new Error("Invalid access token: token is empty");
       }
 
-      // Validate token and get user data from Pi API
       const response = await platformAPIClient.get("/v2/me", {
         headers: { Authorization: `Bearer ${authResult.accessToken}` },
       });
 
-      // Use user data from Pi API response, not from frontend
       piApiUser = response.data;
-      
+
       if (!piApiUser || !piApiUser.username) {
         logger.error('Pi API response missing user data');
         throw new Error("Invalid response from Pi API: missing user data");
@@ -44,24 +42,15 @@ class UsersService {
       logger.info(`✅ Pi API authentication successful for user: ${piApiUser.username}`);
 
     } catch (error: any) {
-      // Log more details about the error for debugging
       const errorMessage = error?.response?.data?.message || error?.message || 'Unknown error';
       const statusCode = error?.response?.status || error?.status;
       const isTimeout = error?.code === 'ECONNABORTED' || errorMessage?.includes('timeout');
-      
+
       logger.error(`Pi API authentication failed: ${errorMessage} (Status: ${statusCode})`);
-      logger.error(`Access token (first 20 chars): ${authResult.accessToken?.substring(0, 20)}...`);
-      
+
       if (isTimeout) {
-        logger.error('Pi API request timed out. Possible causes:');
-        logger.error('1. Pi Network API server is unreachable or slow');
-        logger.error('2. Network connectivity issues');
-        logger.error('3. PLATFORM_API_URL may be incorrect');
-        logger.error(`   Current URL: ${env.PLATFORM_API_URL || 'not set'}`);
         throw new Error("Pi Network API request timed out. Please check your network connection and try again.");
       }
-      
-      // Provide more specific error message
       if (statusCode === 401 || statusCode === 403) {
         throw new Error("Invalid or expired access token. Please re-authenticate with Pi Network.");
       } else if (statusCode === 500) {
@@ -87,7 +76,6 @@ class UsersService {
         user = new User({
           uid: validatedUid,
           username: validatedUsername,
-          // public_key is optional and will be undefined by default
           tokens: [],
           liquidityPools: [],
           role: "user",
