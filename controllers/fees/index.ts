@@ -50,11 +50,12 @@ export const updateFee = async (req: Request, res: Response) => {
 export const deleteFee = async (req: Request, res: Response) => {
   try {
     const { key } = req.params;
-    if (!key) {
+    const feeKey: string = Array.isArray(key) ? key[0] : (key ?? '');
+    if (!feeKey) {
       return res.status(400).json({ success: false, message: 'key is required' });
     }
 
-    await feeService.deleteFee(key);
+    await feeService.deleteFee(feeKey);
     res.json({ success: true, message: 'Fee deleted successfully' });
   } catch (err: any) {
     res.status(400).json({ success: false, message: err.message });
