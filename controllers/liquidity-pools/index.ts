@@ -1,8 +1,10 @@
 import { Request, Response } from 'express';
 import { PoolService } from '../../services/liquidity-pools.service';
+import { AccountService } from '../../services/account.service';
 import { logger } from '../../utils/logger';
 
 const poolService = new PoolService();
+const accountService = new AccountService();
 
 export const createLiquidityPool = async (req: Request, res: Response) => {
   try {
@@ -26,7 +28,63 @@ export const createLiquidityPool = async (req: Request, res: Response) => {
     return res.status(201).json(result);
   } catch (error: any) {
     logger.error('createLiquidityPool failed:', error);
-    const reason = typeof error === 'string' ? error : undefined;
+    logger.error('Error details:', {
+      message: error?.message,
+      operationError: error?.operationError,
+      resultCodes: error?.resultCodes,
+      response: error?.response?.data,
+    });
+    
+    // Handle pool exists error
+    if (error.poolExists && error.poolId) {
+      return res.status(409).json({
+        message: `Pool already exists for ${req.body.tokenA?.code}/${req.body.tokenB?.code}`,
+        poolExists: true,
+        poolId: error.poolId,
+        existingPool: error.existingPool,
+        suggestion: 'Use the deposit endpoint to add liquidity to the existing pool',
+      });
+    }
+
+    // Handle insufficient balance error
+    if (error.message && error.message.includes('Insufficient balance')) {
+      return res.status(400).json({
+        message: error.message,
+        reason: error.message,
+      });
+    }
+
+    // Handle transaction failed errors (e.g., op_low_reserve)
+    if (error.operationError || error.resultCodes) {
+      const operationError = error.operationError || error.resultCodes?.operations?.[0];
+      const transactionError = error.resultCodes?.transaction;
+      
+      // Provide helpful error message based on operation error
+      let userMessage = error.message || 'Transaction failed on Pi Network';
+      let suggestion = '';
+      
+      if (operationError === 'op_low_reserve') {
+        userMessage = 'Insufficient balance: Account does not have enough Test Pi to cover the minimum reserve requirement.';
+        suggestion = 'Each trustline and liquidity pool share requires a small reserve. Please ensure your account has enough Test Pi (native asset) to cover reserves.';
+      } else if (operationError === 'op_underfunded') {
+        userMessage = 'Insufficient balance: Account does not have enough funds to complete this transaction.';
+        suggestion = 'Please check your account balance and ensure you have sufficient funds for both tokens and transaction fees.';
+      } else if (operationError === 'op_line_full') {
+        userMessage = 'Trustline limit reached: Cannot add more liquidity because the trustline limit has been reached.';
+        suggestion = 'The trustline limit for this asset has been reached. You may need to increase the limit or use a different account.';
+      }
+      
+      return res.status(400).json({
+        message: userMessage,
+        reason: operationError || transactionError || error.message,
+        operationError,
+        transactionError,
+        suggestion,
+        details: error.resultCodes,
+      });
+    }
+
+    const reason = typeof error === 'string' ? error : (error.message || undefined);
     return res.status(500).json({ message: 'Failed to create liquidity pool', reason });
   }
 };
@@ -52,7 +110,44 @@ export const depositToLiquidityPool = async (req: Request, res: Response) => {
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error('depositToLiquidityPool failed:', error);
-    const reason = typeof error === 'string' ? error : undefined;
+    logger.error('Error details:', {
+      message: error?.message,
+      operationError: error?.operationError,
+      resultCodes: error?.resultCodes,
+      response: error?.response?.data,
+    });
+    
+    // Handle transaction failed errors (e.g., op_low_reserve)
+    if (error.operationError || error.resultCodes) {
+      const operationError = error.operationError || error.resultCodes?.operations?.[0];
+      const transactionError = error.resultCodes?.transaction;
+      
+      // Provide helpful error message based on operation error
+      let userMessage = error.message || 'Transaction failed on Pi Network';
+      let suggestion = '';
+      
+      if (operationError === 'op_low_reserve') {
+        userMessage = 'Insufficient balance: Account does not have enough Test Pi to cover the minimum reserve requirement.';
+        suggestion = 'Each trustline and liquidity pool share requires a small reserve. Please ensure your account has enough Test Pi (native asset) to cover reserves.';
+      } else if (operationError === 'op_underfunded') {
+        userMessage = 'Insufficient balance: Account does not have enough funds to complete this transaction.';
+        suggestion = 'Please check your account balance and ensure you have sufficient funds for both tokens and transaction fees.';
+      } else if (operationError === 'op_line_full') {
+        userMessage = 'Trustline limit reached: Cannot add more liquidity because the trustline limit has been reached.';
+        suggestion = 'The trustline limit for this asset has been reached. You may need to increase the limit or use a different account.';
+      }
+      
+      return res.status(400).json({
+        message: userMessage,
+        reason: operationError || transactionError || error.message,
+        operationError,
+        transactionError,
+        suggestion,
+        details: error.resultCodes,
+      });
+    }
+    
+    const reason = typeof error === 'string' ? error : (error.message || undefined);
     return res.status(500).json({ message: 'Failed to deposit to liquidity pool', reason });
   }
 };
@@ -78,7 +173,44 @@ export const withdrawFromLiquidityPool = async (req: Request, res: Response) => 
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error('withdrawFromLiquidityPool failed:', error);
-    const reason = typeof error === 'string' ? error : undefined;
+    logger.error('Error details:', {
+      message: error?.message,
+      operationError: error?.operationError,
+      resultCodes: error?.resultCodes,
+      response: error?.response?.data,
+    });
+    
+    // Handle transaction failed errors (e.g., op_low_reserve)
+    if (error.operationError || error.resultCodes) {
+      const operationError = error.operationError || error.resultCodes?.operations?.[0];
+      const transactionError = error.resultCodes?.transaction;
+      
+      // Provide helpful error message based on operation error
+      let userMessage = error.message || 'Transaction failed on Pi Network';
+      let suggestion = '';
+      
+      if (operationError === 'op_low_reserve') {
+        userMessage = 'Insufficient balance: Account does not have enough Test Pi to cover the minimum reserve requirement.';
+        suggestion = 'Each trustline and liquidity pool share requires a small reserve. Please ensure your account has enough Test Pi (native asset) to cover reserves.';
+      } else if (operationError === 'op_underfunded') {
+        userMessage = 'Insufficient balance: Account does not have enough funds to complete this transaction.';
+        suggestion = 'Please check your account balance and ensure you have sufficient funds for transaction fees.';
+      } else if (operationError === 'op_line_full') {
+        userMessage = 'Trustline limit reached: Cannot withdraw liquidity because the trustline limit has been reached.';
+        suggestion = 'The trustline limit for this asset has been reached. You may need to increase the limit or use a different account.';
+      }
+      
+      return res.status(400).json({
+        message: userMessage,
+        reason: operationError || transactionError || error.message,
+        operationError,
+        transactionError,
+        suggestion,
+        details: error.resultCodes,
+      });
+    }
+    
+    const reason = typeof error === 'string' ? error : (error.message || undefined);
     return res.status(500).json({ message: 'Failed to withdraw from liquidity pool', reason });
   }
 };
@@ -87,8 +219,9 @@ export const listLiquidityPools = async (req: Request, res: Response) => {
   try {
     const limit = req.query.limit ? Number(req.query.limit) : 10;
     const cursor = req.query.cursor ? String(req.query.cursor) : undefined;
+    const useCache = req.query.cache !== 'false';
 
-    const result = await poolService.getLiquidityPools(limit, cursor);
+    const result = await poolService.getLiquidityPools(limit, cursor, useCache);
 
     return res.status(200).json({
       data: result.records,
@@ -156,6 +289,91 @@ export const getUserLiquidityPools = async (req: Request, res: Response) => {
   } catch (error: any) {
     logger.error('getUserLiquidityPools failed:', error);
     return res.status(500).json({ message: 'Failed to fetch liquidity pools for user' });
+  }
+};
+
+export const getUserTokens = async (req: Request, res: Response) => {
+  try {
+    const publicKey =
+      (typeof req.query.publicKey === 'string' && req.query.publicKey) ||
+      (typeof req.params.publicKey === 'string' && req.params.publicKey);
+
+    if (!publicKey) {
+      return res.status(400).json({ message: 'publicKey is required' });
+    }
+
+    const useCache = req.query.cache !== 'false';
+    const result = await accountService.getBalances(publicKey, useCache);
+
+    if (!result) {
+      return res.status(500).json({ message: 'Failed to fetch balances' });
+    }
+
+    // Filter out liquidity pool shares and return only owned tokens
+    const tokens = (result.balances || [])
+      .filter((balance: any) => {
+        // Exclude liquidity pool shares
+        return balance.assetType !== 'liquidity_pool_shares';
+      })
+      .map((balance: any) => {
+        // Format token information
+        return {
+          code: balance.assetCode,
+          issuer: balance.assetIssuer || null,
+          amount: balance.amount,
+          assetType: balance.assetType,
+        };
+      });
+
+    return res.status(200).json({
+      publicKey,
+      tokens,
+      cached: result.cached || false,
+    });
+  } catch (error: any) {
+    logger.error('getUserTokens failed:', error);
+    return res.status(500).json({ message: 'Failed to fetch user tokens' });
+  }
+};
+
+export const getPlatformPools = async (req: Request, res: Response) => {
+  try {
+    const useCache = req.query.cache !== 'false';
+
+    const pools = await poolService.getPlatformPools(useCache);
+
+    return res.status(200).json({
+      pools,
+      count: pools.length,
+    });
+  } catch (error: any) {
+    logger.error('getPlatformPools failed:', error);
+    return res.status(500).json({ message: 'Failed to fetch platform pools' });
+  }
+};
+
+export const quoteAddLiquidity = async (req: Request, res: Response) => {
+  try {
+    const { poolId, amountA } = req.query as { poolId?: string; amountA?: string };
+
+    if (!poolId || !amountA) {
+      return res.status(400).json({
+        message: 'Missing required fields: poolId, amountA',
+      });
+    }
+
+    const quote = await poolService.quoteAddLiquidity(poolId, amountA);
+
+    return res.status(200).json({
+      success: true,
+      ...quote,
+    });
+  } catch (error: any) {
+    logger.error('quoteAddLiquidity failed:', error);
+    return res.status(500).json({ 
+      success: false,
+      message: error.message || 'Failed to calculate quote for adding liquidity' 
+    });
   }
 };
 

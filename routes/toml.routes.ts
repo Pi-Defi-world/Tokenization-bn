@@ -5,12 +5,21 @@ const tomlRoutes = Router();
 
 tomlRoutes.get("/", async (req: Request, res: Response) => {
   try {
+    // Pi Wallet expects pi.toml to list all tokens from the issuer
+    // We can filter by issuer or assetCode query param
+    const issuer = req.query.issuer as string;
     const assetCode = req.query.assetCode as string;
-    if (!assetCode) return res.status(400).send('Missing assetCode query parameter');
 
-    const token = await Toml.findOne({ assetCode }).lean();
+    const query: any = {};
+    if (issuer) query.issuer = issuer;
+    if (assetCode) query.assetCode = assetCode;
 
-    if (!token) return res.status(404).send('Token not found');
+    // If no query params, get all tokens (or you might want to return 400)
+    const tokens = await Toml.find(query).lean();
+
+    if (tokens.length === 0) {
+      return res.status(404).send('No tokens found');
+    }
 
     const hasValue = (value: any): boolean => {
       return value !== null && value !== undefined && value !== '';
@@ -22,63 +31,76 @@ tomlRoutes.get("/", async (req: Request, res: Response) => {
 
     let toml = `NETWORK_PASSPHRASE="${process.env.NETWORK || ''}"
 VERSION="2.0.0"
+`;
 
-[[CURRENCIES]]
-code=${formatString(token.assetCode)}
-issuer=${formatString(token.issuer)}`;
+    // Pi Wallet requires each token to have its own [[CURRENCIES]] section
+    tokens.forEach((token) => {
+      toml += `\n[[CURRENCIES]]\n`;
+      toml += `code=${formatString(token.assetCode)}\n`;
+      toml += `issuer=${formatString(token.issuer)}\n`;
+      
+      // REQUIRED fields per Pi Wallet documentation:
+      // name: name of token issuer (we use token name, but should be issuer name)
+      toml += `name=${formatString(token.name)}\n`;
+      
+      // desc: REQUIRED - description of the token
+      toml += `desc=${formatString(token.description || 'No description available')}\n`;
+      
+      // image: REQUIRED - icon of the token
+      toml += `image=${formatString(token.imgUrl || 'https://via.placeholder.com/64')}\n`;
+      
+      // Optional fields
+      if (token.displayDecimals !== undefined) {
+        toml += `display_decimals=${token.displayDecimals}\n`;
+      }
+      if (token.totalSupply !== undefined) {
+        toml += `fixed_number=${token.totalSupply}\n`;
+      }
+      if (token.isAssetAnchored !== undefined) {
+        toml += `is_asset_anchored=${token.isAssetAnchored}\n`;
+      }
+      if (hasValue(token.anchorAssetType)) {
+        toml += `anchor_asset_type=${formatString(token.anchorAssetType)}\n`;
+      }
+      if (hasValue(token.conditions) && token.conditions !== 'N/A') {
+        toml += `conditions=${formatString(token.conditions)}\n`;
+      }
+      if (hasValue(token.status) && token.status !== 'live') {
+        toml += `status=${formatString(token.status)}\n`;
+      }
+      if (hasValue(token.redemptionInstructions) && token.redemptionInstructions !== 'N/A') {
+        toml += `redemption_instructions=${formatString(token.redemptionInstructions)}\n`;
+      }
+    });
 
-    toml += `
-display_decimals=${token.displayDecimals ?? 2}
-name=${formatString(token.name)}
-fixed_number=${token.totalSupply}
-is_asset_anchored=${token.isAssetAnchored ?? false}
-anchor_asset_type=${formatString(token.anchorAssetType ?? 'other')}`;
-
-    if (hasValue(token.description)) {
-      toml += `\ndesc=${formatString(token.description)}`;
-    }
-
-    if (hasValue(token.imgUrl)) {
-      toml += `\nimage=${formatString(token.imgUrl)}`;
-    }
-
-    if (hasValue(token.conditions) && token.conditions !== 'N/A') {
-      toml += `\nconditions=${formatString(token.conditions)}`;
-    }
-
-    if (hasValue(token.status) && token.status !== 'live') {
-      toml += `\nstatus=${formatString(token.status)}`;
-    }
-
-    if (hasValue(token.redemptionInstructions) && token.redemptionInstructions !== 'N/A') {
-      toml += `\nredemption_instructions=${formatString(token.redemptionInstructions)}`;
-    }
-
+    // Add organization info from first token (assuming all tokens from same issuer)
+    const firstToken = tokens[0];
     const hasOrgInfo =
-      hasValue(token.orgName) ||
-      hasValue(token.orgUrl) ||
-      hasValue(token.orgDescription);
+      hasValue(firstToken.orgName) ||
+      hasValue(firstToken.orgUrl) ||
+      hasValue(firstToken.orgDescription);
 
     if (hasOrgInfo) {
       toml += `\n\n[ORGANIZATION]`;
 
-      if (hasValue(token.orgName)) {
-        toml += `\nname=${formatString(token.orgName)}`;
+      if (hasValue(firstToken.orgName)) {
+        toml += `\nname=${formatString(firstToken.orgName)}`;
       }
 
-      if (hasValue(token.orgUrl)) {
-        toml += `\nurl=${formatString(token.orgUrl)}`;
+      if (hasValue(firstToken.orgUrl)) {
+        toml += `\nurl=${formatString(firstToken.orgUrl)}`;
       }
 
-      if (hasValue(token.orgDescription)) {
-        toml += `\ndescription=${formatString(token.orgDescription)}`;
+      if (hasValue(firstToken.orgDescription)) {
+        toml += `\ndescription=${formatString(firstToken.orgDescription)}`;
       }
     }
 
+    // Pi Wallet requires Content-Type: text/plain
     res.setHeader('Content-Type', 'text/plain');
     res.send(toml.trim());
   } catch (error) {
-    res.status(500).send('Failed to generate stellar.toml');
+    res.status(500).send('Failed to generate pi.toml');
   }
 });
 

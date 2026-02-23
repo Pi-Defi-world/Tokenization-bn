@@ -23,5 +23,6 @@ appRoutes.use("/pairs", pairRoutes)
 appRoutes.use("/market", orderbookRoutes)
 appRoutes.use("/trade", tradeRoutes)
 appRoutes.use("/account", accountRoutes)
+// Encrypted secret and passkey routes removed - users now provide secret seed directly for transactions
 
 export default appRoutes

@@ -27,6 +27,13 @@ export class FeeService {
     if (!fee) throw new Error(`Fee "${key}" not found or inactive`);
     return fee;
   }
+
+  async deleteFee(key: string) {
+    const fee = await FeeConfig.findOneAndDelete({ key });
+    if (!fee) throw new Error(`Fee with key "${key}" not found`);
+    logger.info(`🗑️ Deleted fee: ${key}`);
+    return fee;
+  }
 }
 
 export const feeService = new FeeService();

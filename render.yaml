@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: tokenization-backend
+    env: node
+    buildCommand: pnpm install && pnpm build
+    startCommand: pnpm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        fromService:
+          type: web
+          name: tokenization-backend
+          property: port
+      # Add your other environment variables in Render dashboard:
+      # - HORIZON_URL
+      # - NETWORK
+      # - PLATFORM_ISSUER_SECRET
+      # - PI_API_KEY
+      # - PLATFORM_API_URL
+      # - JWT_SECRET
+      # - MONGO_URI
+      # - WEBAUTHN_RP_ID
+      # - WEBAUTHN_RP_NAME
+      # - WEBAUTHN_ORIGIN
+

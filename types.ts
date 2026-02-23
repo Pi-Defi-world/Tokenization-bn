@@ -65,7 +65,7 @@ export interface IUser extends Document {
   id: string;
   uid: string;
   username: string;
-  public_key: string;
+  public_key?: string;
   avatarUrl: string;
   tokens: ObjectId[];
   liquidityPools: ObjectId[];

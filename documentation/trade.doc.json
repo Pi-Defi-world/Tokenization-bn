@@ -99,7 +99,7 @@
         "post": {
           "tags": ["Trade"],
           "summary": "Cancel a trade offer",
-          "description": "Cancels an active offer by its offer ID on the Stellar network.",
+          "description": "Cancels an active offer by its offer ID on the Pi Network.",
           "security": [{ "bearerAuth": [] }],
           "requestBody": {
             "required": true,
