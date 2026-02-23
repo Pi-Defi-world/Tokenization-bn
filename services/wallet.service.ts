@@ -17,6 +17,8 @@ export interface CreateWalletResult {
     accountCreated: boolean;
     amount: string;
   };
+  /** Set when an existing wallet was replaced (user already had public_key) */
+  previousPublicKey?: string | null;
 }
 
 export class WalletService {
@@ -155,13 +157,19 @@ export class WalletService {
    * @returns {Promise<CreateWalletResult>} Wallet details with public key and secret key
    */
   async generateAndLinkWallet(userId: string): Promise<CreateWalletResult> {
+    let previousPublicKey: string | null = null;
+
     // Clear old public_key for this user before creating new one
     logger.info(`Clearing old wallet for user ${userId}...`);
-    
+
     try {
       const user = await User.findById(userId);
       if (!user) {
         throw new Error('User not found');
+      }
+
+      if (user.public_key && user.public_key.trim() !== '') {
+        previousPublicKey = user.public_key;
       }
 
       // Clear old public_key (set to null to work with sparse unique index)
@@ -201,6 +209,7 @@ export class WalletService {
       publicKey: newWallet.publicKey,
       secretKey: newWallet.secretKey,
       seedResult: seedResult,
+      previousPublicKey: previousPublicKey ?? undefined,
     };
   }
 
