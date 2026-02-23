@@ -36,7 +36,8 @@ export async function getOffersByAccountHandler(req: Request, res: Response) {
     const accountId = req.params.account;
     if (!accountId) return res.status(400).json({ success: false, message: "account required" });
 
-    const offers = await orderBookService.getOffersByAccount(accountId);
+    const id = Array.isArray(accountId) ? accountId[0] : accountId;
+    const offers = await orderBookService.getOffersByAccount(id);
     return res.json({ success: true, offers });
   } catch (err: any) {
     logger.error("getOffersByAccountHandler", err);
