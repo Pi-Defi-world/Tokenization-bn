@@ -4,7 +4,7 @@ import { IUser } from '../types';
 const userSchema = new Schema<IUser>({
   uid: { type: String, required: true, unique: true },
   username: { type: String, required: true, unique: true },
-  public_key: { type: String, required: false, unique: true },
+  public_key: { type: String, required: false, unique: true, sparse: true },
   avatarUrl: { 
     type: String, 
     default: "https://api.dicebear.com/7.x/pixel-art/svg?seed=user"
@@ -23,6 +23,8 @@ const userSchema = new Schema<IUser>({
 }, {
   timestamps: true
 });
+
+userSchema.index({ public_key: 1 }, { sparse: true, unique: true });
 
 const User = mongoose.model<IUser>('User', userSchema);
 

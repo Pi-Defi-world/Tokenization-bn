@@ -1,4 +1,6 @@
-import { Document, ObjectId } from "mongoose";
+import { Document, Types } from "mongoose";
+
+type ObjectId = Types.ObjectId;
 
 export interface IAssetRecord {
   _links: {
@@ -61,11 +63,10 @@ export interface IToml extends Document {
 
 
 export interface IUser extends Document {
-  _id: ObjectId;
   id: string;
   uid: string;
   username: string;
-  public_key: string;
+  public_key?: string;
   avatarUrl: string;
   tokens: ObjectId[];
   liquidityPools: ObjectId[];
@@ -106,6 +107,62 @@ export interface ICreateTokenPayload{
   description: string;
   totalSupply: number;
 }
+
+export type LaunchStatus =
+  | 'draft'
+  | 'participation_open'
+  | 'participation_closed'
+  | 'allocation_running'
+  | 'tge_open';
+
+export type AllocationDesign = 1 | 2;
+
+export interface ITokenAsset {
+  code: string;
+  issuer: string;
+}
+
+export interface ILaunchDoc {
+  _id: ObjectId;
+  projectId: string;
+  projectAppUrl?: string;
+  teamVestingSchedule?: string;
+  tokenAsset: ITokenAsset;
+  T_available: string;
+  participationWindowStart?: Date;
+  participationWindowEnd?: Date;
+  stakeDurationDays: number;
+  allocationDesign: AllocationDesign;
+  status: LaunchStatus;
+  escrowPublicKey?: string;
+  escrowLocked?: boolean;
+  poolId?: string;
+  tgeAt?: Date;
+  listingPrice?: string;
+  PiPowerBaseline?: string;
+  createdBeforeCutoff: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IParticipationDoc {
+  _id: ObjectId;
+  launchId: ObjectId;
+  userId: string;
+  stakedPi: string;
+  committedPi: string;
+  piPower: string;
+  engagementScore: number;
+  engagementRank: number;
+  allocatedTokens: string;
+  effectivePrice: string;
+  tier?: 'top' | 'mid' | 'bottom';
+  swapOrder?: number;
+  lockupEnd?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 
 
 

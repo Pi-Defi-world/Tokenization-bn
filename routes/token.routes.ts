@@ -5,6 +5,7 @@ import { validateMintTokenFields } from '../middlewares/mint-token-validator';
 const tokenRoutes = Router();
 
 tokenRoutes.get('/',TokenController.getTokens);
+tokenRoutes.get('/mint-fee', TokenController.getMintFee);
 tokenRoutes.post('/trustline', TokenController.trustline);
 tokenRoutes.post('/mint',validateMintTokenFields,TokenController.mint);
 tokenRoutes.post('/burn',TokenController.burnTokens);

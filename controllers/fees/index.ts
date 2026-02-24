@@ -15,7 +15,7 @@ export const createFee = async (req: Request, res: Response) => {
       key,
       description,
       value,
-      currency: currency || 'ZYRA',
+      currency: currency || 'PI',
       isActive: isActive ?? true,
     });
 
@@ -42,6 +42,21 @@ export const updateFee = async (req: Request, res: Response) => {
 
     const updated = await feeService.updateFee(feeKey, updates);
     res.json({ success: true, fee: updated });
+  } catch (err: any) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+};
+
+export const deleteFee = async (req: Request, res: Response) => {
+  try {
+    const { key } = req.params;
+    const feeKey: string = Array.isArray(key) ? key[0] : (key ?? '');
+    if (!feeKey) {
+      return res.status(400).json({ success: false, message: 'key is required' });
+    }
+
+    await feeService.deleteFee(feeKey);
+    res.json({ success: true, message: 'Fee deleted successfully' });
   } catch (err: any) {
     res.status(400).json({ success: false, message: err.message });
   }

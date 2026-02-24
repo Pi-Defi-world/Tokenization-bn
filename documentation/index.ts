@@ -6,6 +6,7 @@ import pairsDoc from './pairs.doc.json';
 import orderbookDoc from './orderbook.doc.json';
 import tradeDoc from './trade.doc.json';
 import accountDoc from './account.doc.json';
+import passkeyDoc from './passkey.doc.json';
 
 export const swaggerDocs = {
   openapi: '3.0.0',
@@ -43,6 +44,7 @@ export const swaggerDocs = {
     ...pairsDoc.tags,
     ...orderbookDoc.tags,
     ...tradeDoc.tags,
+    ...passkeyDoc.tags,
   ],
   paths: {
     ...accountDoc.paths,
@@ -53,5 +55,6 @@ export const swaggerDocs = {
     ...pairsDoc.paths,
     ...orderbookDoc.paths,
     ...tradeDoc.paths,
+    ...passkeyDoc.paths,
   }
 };
