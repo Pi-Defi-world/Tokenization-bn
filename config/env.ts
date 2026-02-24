@@ -31,6 +31,16 @@ const env = {
             testnet: process.env.PI_HORIZON_TESTNET || 'https://api.testnet.minepi.com',
         },
     },
+    /** Pi asset for launchpad LP: { code, issuer }. If code is 'native', issuer can be empty. */
+    PI_ASSET_CODE: (process.env.PI_ASSET_CODE as string) || 'native',
+    PI_ASSET_ISSUER: (process.env.PI_ASSET_ISSUER as string) || '',
+    /** Lending: borrow rates (yearly %). Small amount = 15%, big business = 12%. */
+    BORROW_RATE_SMALL_YEARLY: parseFloat(process.env.BORROW_RATE_SMALL_YEARLY as string) || 15,
+    BORROW_RATE_BIG_BUSINESS_YEARLY: parseFloat(process.env.BORROW_RATE_BIG_BUSINESS_YEARLY as string) || 12,
+    /** Max borrow amount (in borrowed asset units) to be classified as "small". Above = big business. */
+    BORROW_THRESHOLD_SMALL_MAX: process.env.BORROW_THRESHOLD_SMALL_MAX as string || '10000',
+    /** All platform fees (0.6% on payouts, lending, etc.) are sent to this Stellar public key. */
+    PLATFORM_FEE_PUBLIC_KEY: process.env.PLATFORM_FEE_PUBLIC_KEY as string || '',
 }
 
 export default env;

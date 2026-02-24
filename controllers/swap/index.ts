@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { swapService } from '../../services/swap.service';
 import { logger } from '../../utils/logger';
 import { PoolService } from '../../services/liquidity-pools.service';
+import { ensureTgeOpenForPool } from '../../middlewares/launchpad-guard';
 
 const poolService = new PoolService();
 
@@ -26,6 +27,11 @@ export const quoteSwap = async (req: Request, res: Response) => {
 
     if (!poolId || !from || !to || !amount)
       return res.status(400).json({ success: false, message: 'Missing parameters' });
+
+    const tgeError = await ensureTgeOpenForPool(poolId as string);
+    if (tgeError) {
+      return res.status(403).json({ success: false, error: tgeError });
+    }
 
     // Parse from/to - can be string "native" or "CODE:ISSUER" or object
     let fromAsset: { code: string; issuer?: string };
@@ -88,11 +94,15 @@ export const executeSwap = async (req: Request, res: Response) => {
     if (!sendAmount)
       return res.status(400).json({ success: false, message: 'Missing sendAmount' });
 
+    const tgeError = await ensureTgeOpenForPool(poolId);
+    if (tgeError) {
+      return res.status(403).json({ success: false, error: tgeError });
+    }
+
     // Convert from/to objects to strings if needed
-    const fromStr = typeof from === 'string' 
-      ? from 
+    const fromStr = typeof from === 'string'
+      ? from
       : (from.code === 'native' ? 'native' : `${from.code}:${from.issuer || ''}`);
-    
     const toStr = typeof to === 'string'
       ? to
       : (to.code === 'native' ? 'native' : `${to.code}:${to.issuer || ''}`);

@@ -2,7 +2,10 @@ import mongoose from 'mongoose';
 import env from './env';
 import { logger } from '../utils/logger';
 
-export const connectDB = async () => {
+const MAX_RETRIES = 5;
+const RETRY_DELAY_MS = 3000;
+
+export const connectDB = async (): Promise<void> => {
   const mongoURI = env.MONGO_URI;
   if (!mongoURI) {
     logger.error('MONGO_URI is not defined in environment variables');
@@ -10,37 +13,36 @@ export const connectDB = async () => {
     throw new Error('MONGO_URI is not defined in environment variables');
   }
 
-  // Log connection attempt (without exposing credentials)
   const mongoURIMasked = mongoURI.replace(/\/\/([^:]+):([^@]+)@/, '//***:***@');
   logger.info(`Attempting to connect to MongoDB: ${mongoURIMasked}`);
 
-  try {
-    await mongoose.connect(mongoURI, {
-      maxPoolSize: 50, // Maximum number of connections in the pool
-      minPoolSize: 10, // Minimum number of connections to maintain
-      maxIdleTimeMS: 30000, // Close connections after 30s of inactivity
-      serverSelectionTimeoutMS: 30000, // Increased to 30s for better debugging
-      socketTimeoutMS: 45000, // How long to wait for socket operations
-      connectTimeoutMS: 30000, // Increased to 30s for better debugging
-      // Note: bufferMaxEntries and bufferCommands are not available in Mongoose 8.x
-      // Mongoose 8.x disables buffering by default when not connected
-    });
-    logger.success('MongoDB connected with optimized connection pool');
-  } catch (error: any) {
-    logger.error('MongoDB connection error:', error.message || error);
-    
-    // Provide helpful troubleshooting information
-    if (error.message?.includes('timed out') || error.message?.includes('Server selection timed out')) {
-      logger.error('Troubleshooting tips:');
-      logger.error('1. Check if MongoDB server is running (if using local MongoDB)');
-      logger.error('2. Verify MONGO_URI in your .env file is correct');
-      logger.error('3. If using MongoDB Atlas, check:');
-      logger.error('   - Your IP address is whitelisted in Network Access');
-      logger.error('   - Database user credentials are correct');
-      logger.error('   - Cluster is not paused');
-      logger.error('4. Check your network/firewall settings');
+  const connectOptions = {
+    maxPoolSize: 50,
+    minPoolSize: 10,
+    maxIdleTimeMS: 30000,
+    serverSelectionTimeoutMS: 30000,
+    socketTimeoutMS: 45000,
+    connectTimeoutMS: 30000,
+  };
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      await mongoose.connect(mongoURI, connectOptions);
+      logger.success('MongoDB connected');
+      return;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error(`MongoDB connection error (attempt ${attempt}/${MAX_RETRIES}):`, message);
+
+      if (attempt === MAX_RETRIES) {
+        logger.error(
+          'Could not connect after retries. Check: (1) MONGO_URI in .env, (2) network/firewall, (3) MongoDB Atlas cluster is running and not paused.'
+        );
+        process.exit(1);
+      }
+
+      logger.error(`Retrying in ${RETRY_DELAY_MS / 1000}s...`);
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
     }
-    
-    process.exit(1);
   }
 };

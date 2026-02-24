@@ -19,15 +19,75 @@ export const createWallet = async (req: Request, res: Response) => {
 
     const result = await walletService.generateAndLinkWallet(userId);
 
+    const replacedPreviousWallet = result.previousPublicKey != null && result.previousPublicKey !== '';
+    const warning = replacedPreviousWallet
+      ? 'You have replaced your previous wallet. The old wallet address is no longer linked to this account. Any funds or data tied to the old address are not automatically transferred. Store your new secret key securely.'
+      : undefined;
+
     return res.status(200).json({
       publicKey: result.publicKey,
       secret: result.secretKey,
       seedResult: result.seedResult,
+      replacedPreviousWallet,
+      previousPublicKey: result.previousPublicKey ?? null,
+      warning,
     });
   } catch (err: any) {
     logger.error('❌ createWallet failed:', err);
     const statusCode = err.message.includes('User not found') || err.message.includes('PI_TEST_USER_SECRET_KEY') ? 400 : 500;
     return res.status(statusCode).json({ message: err.message || 'Failed to create wallet', error: err.message });
+  }
+};
+
+/**
+ * Change wallet: replace the user's current wallet with a new one.
+ * Requires body.confirmReplace === true. Use when user already has a wallet (public_key).
+ * Returns same shape as createWallet, with warning and replacedPreviousWallet set.
+ */
+export const changeWallet = async (req: Request, res: Response) => {
+  try {
+    const currentUser = (req as any).currentUser;
+
+    if (!currentUser) {
+      return res.status(401).json({ message: 'Not authenticated' });
+    }
+
+    const confirmReplace = req.body?.confirmReplace === true;
+    if (!confirmReplace) {
+      return res.status(400).json({
+        message: 'Changing wallet requires explicit confirmation. Send { "confirmReplace": true } in the request body after showing the user the warning.',
+        code: 'CONFIRM_REQUIRED',
+      });
+    }
+
+    const existingPublicKey = currentUser.public_key != null && String(currentUser.public_key).trim() !== '';
+    if (!existingPublicKey) {
+      return res.status(400).json({
+        message: 'No existing wallet to replace. Use POST /create-wallet to create your first wallet.',
+        code: 'NO_WALLET_TO_REPLACE',
+      });
+    }
+
+    const userId = currentUser._id.toString();
+    logger.info(`Changing wallet for user ${userId}, previous: ${currentUser.public_key}`);
+
+    const result = await walletService.generateAndLinkWallet(userId);
+
+    const warning =
+      'You have replaced your previous wallet. The old wallet address is no longer linked to this account. Any funds or data tied to the old address are not automatically transferred. Store your new secret key securely.';
+
+    return res.status(200).json({
+      publicKey: result.publicKey,
+      secret: result.secretKey,
+      seedResult: result.seedResult,
+      replacedPreviousWallet: true,
+      previousPublicKey: result.previousPublicKey ?? null,
+      warning,
+    });
+  } catch (err: any) {
+    logger.error('❌ changeWallet failed:', err);
+    const statusCode = err.message.includes('User not found') || err.message.includes('PI_TEST_USER_SECRET_KEY') ? 400 : 500;
+    return res.status(statusCode).json({ message: err.message || 'Failed to change wallet', error: err.message });
   }
 };
 

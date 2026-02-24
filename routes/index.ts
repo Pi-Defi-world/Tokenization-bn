@@ -9,8 +9,10 @@ import pairRoutes from "./pairs.routes";
 import orderbookRoutes from "./orderbook.routes";
 import tradeRoutes from "./trade.routes";
 import accountRoutes from "./account.routes";
-
-
+import launchpadRoutes from "./launchpad.routes";
+import dividendRoutes from "./dividend.routes";
+import savingsRoutes from "./savings.routes";
+import lendingRoutes from "./lending.routes";
 
 const appRoutes = Router()
 
@@ -23,6 +25,9 @@ appRoutes.use("/pairs", pairRoutes)
 appRoutes.use("/market", orderbookRoutes)
 appRoutes.use("/trade", tradeRoutes)
 appRoutes.use("/account", accountRoutes)
-// Encrypted secret and passkey routes removed - users now provide secret seed directly for transactions
+appRoutes.use("/launchpad", launchpadRoutes)
+appRoutes.use("/dividend-rounds", dividendRoutes)
+appRoutes.use("/savings", savingsRoutes)
+appRoutes.use("/lending", lendingRoutes)
 
 export default appRoutes

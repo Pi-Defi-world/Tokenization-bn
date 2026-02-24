@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { PoolService } from '../../services/liquidity-pools.service';
 import { AccountService } from '../../services/account.service';
+import { ensureTgeOpenForPool } from '../../middlewares/launchpad-guard';
 import { logger } from '../../utils/logger';
 
 const poolService = new PoolService();
@@ -100,6 +101,11 @@ export const depositToLiquidityPool = async (req: Request, res: Response) => {
       });
     }
 
+    const tgeError = await ensureTgeOpenForPool(poolId);
+    if (tgeError) {
+      return res.status(403).json({ message: tgeError });
+    }
+
     const result = await poolService.addLiquidity(
       userSecret,
       poolId,
@@ -162,6 +168,11 @@ export const withdrawFromLiquidityPool = async (req: Request, res: Response) => 
         message:
           'Missing required fields: userSecret, poolId, amount (shares to redeem)',
       });
+    }
+
+    const tgeError = await ensureTgeOpenForPool(poolId);
+    if (tgeError) {
+      return res.status(403).json({ message: tgeError });
     }
 
     const result = await poolService.removeLiquidity(
