@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { logger } from '../../utils/logger';
 import { AccountService } from '../../services/account.service';
 import WalletService from '../../services/wallet.service';
+import { errorBody, errorBodyFrom } from '../../utils/zyradex-error';
 
 const accountService = new AccountService();
 const walletService = new WalletService();
@@ -10,9 +11,7 @@ export const createWallet = async (req: Request, res: Response) => {
   try {
     const currentUser = (req as any).currentUser;
 
-    if (!currentUser) {
-      return res.status(401).json({ message: 'Not authenticated' });
-    }
+    if (!currentUser) return res.status(401).json(errorBody('Please sign in to create a wallet.'));
 
     const userId = currentUser._id.toString();
     logger.info(`Creating new wallet for user ${userId}`);
@@ -34,8 +33,8 @@ export const createWallet = async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     logger.error('❌ createWallet failed:', err);
-    const statusCode = err.message.includes('User not found') || err.message.includes('PI_TEST_USER_SECRET_KEY') ? 400 : 500;
-    return res.status(statusCode).json({ message: err.message || 'Failed to create wallet', error: err.message });
+    const status = err?.message?.includes('User not found') || err?.message?.includes('PI_TEST_USER_SECRET_KEY') ? 400 : 500;
+    return res.status(status).json(errorBodyFrom(err));
   }
 };
 
@@ -48,25 +47,13 @@ export const changeWallet = async (req: Request, res: Response) => {
   try {
     const currentUser = (req as any).currentUser;
 
-    if (!currentUser) {
-      return res.status(401).json({ message: 'Not authenticated' });
-    }
+    if (!currentUser) return res.status(401).json(errorBody('Please sign in to change your wallet.'));
 
     const confirmReplace = req.body?.confirmReplace === true;
-    if (!confirmReplace) {
-      return res.status(400).json({
-        message: 'Changing wallet requires explicit confirmation. Send { "confirmReplace": true } in the request body after showing the user the warning.',
-        code: 'CONFIRM_REQUIRED',
-      });
-    }
+    if (!confirmReplace) return res.status(400).json(errorBody('You must confirm that you want to replace your wallet.'));
 
     const existingPublicKey = currentUser.public_key != null && String(currentUser.public_key).trim() !== '';
-    if (!existingPublicKey) {
-      return res.status(400).json({
-        message: 'No existing wallet to replace. Use POST /create-wallet to create your first wallet.',
-        code: 'NO_WALLET_TO_REPLACE',
-      });
-    }
+    if (!existingPublicKey) return res.status(400).json(errorBody('You don\'t have a wallet yet. Create one first.'));
 
     const userId = currentUser._id.toString();
     logger.info(`Changing wallet for user ${userId}, previous: ${currentUser.public_key}`);
@@ -86,8 +73,8 @@ export const changeWallet = async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     logger.error('❌ changeWallet failed:', err);
-    const statusCode = err.message.includes('User not found') || err.message.includes('PI_TEST_USER_SECRET_KEY') ? 400 : 500;
-    return res.status(statusCode).json({ message: err.message || 'Failed to change wallet', error: err.message });
+    const status = err?.message?.includes('User not found') || err?.message?.includes('PI_TEST_USER_SECRET_KEY') ? 400 : 500;
+    return res.status(status).json(errorBodyFrom(err));
   }
 };
 
@@ -166,10 +153,7 @@ export const getAccountOperations = async (req: Request, res: Response) => {
     return res.status(200).json(result);
   } catch (err: any) {
     logger.error('❌ getAccountOperations failed:', err);
-    return res.status(500).json({
-      message: 'Failed to fetch account operations',
-      error: err.response?.data || err.message,
-    });
+    return res.status(500).json(errorBodyFrom(err));
   }
 };
 

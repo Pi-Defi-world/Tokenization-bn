@@ -51,9 +51,10 @@ export const supply = async (req: Request, res: Response) => {
     const poolId = getPoolIdParam(req);
     const userId = (req as any).user?.id ?? req.body?.userId;
     if (!userId) return res.status(400).json({ message: 'userId required (auth or body)' });
-    const { amount } = req.body || {};
+    const { amount, userSecret } = req.body || {};
     if (!amount) return res.status(400).json({ message: 'Missing required: amount' });
-    const position = await lendingService.supply(poolId, String(userId), String(amount));
+    if (!userSecret) return res.status(400).json({ message: 'userSecret required to sign the supply transaction' });
+    const position = await lendingService.supply(poolId, String(userId), String(amount), userSecret);
     return res.status(200).json(position);
   } catch (error: any) {
     logger.error('supply failed:', error);
@@ -81,18 +82,20 @@ export const borrow = async (req: Request, res: Response) => {
     const poolId = getPoolIdParam(req);
     const userId = (req as any).user?.id ?? req.body?.userId;
     if (!userId) return res.status(400).json({ message: 'userId required (auth or body)' });
-    const { collateralAsset, collateralAmount, borrowAmount } = req.body || {};
+    const { collateralAsset, collateralAmount, borrowAmount, userSecret } = req.body || {};
     if (!collateralAsset?.code || !collateralAsset?.issuer || !collateralAmount || !borrowAmount) {
       return res.status(400).json({
         message: 'Missing required: collateralAsset { code, issuer }, collateralAmount, borrowAmount',
       });
     }
+    if (!userSecret) return res.status(400).json({ message: 'userSecret required to sign the borrow transaction' });
     const position = await lendingService.borrow(
       poolId,
       String(userId),
       { code: collateralAsset.code, issuer: collateralAsset.issuer },
       String(collateralAmount),
-      String(borrowAmount)
+      String(borrowAmount),
+      userSecret
     );
     return res.status(201).json(position);
   } catch (error: any) {
@@ -116,9 +119,10 @@ export const getPositions = async (req: Request, res: Response) => {
 export const repay = async (req: Request, res: Response) => {
   try {
     const borrowPositionId = req.params.borrowPositionId as string;
-    const { amount } = req.body || {};
+    const { amount, userSecret } = req.body || {};
     if (!borrowPositionId || !amount) return res.status(400).json({ message: 'Missing: borrowPositionId (param), amount' });
-    const result = await lendingService.repay(borrowPositionId, String(amount));
+    if (!userSecret) return res.status(400).json({ message: 'userSecret required to sign the repay transaction' });
+    const result = await lendingService.repay(borrowPositionId, String(amount), userSecret);
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error('repay failed:', error);
@@ -130,11 +134,14 @@ export const liquidate = async (req: Request, res: Response) => {
   try {
     const borrowPositionId = req.params.borrowPositionId as string;
     const liquidatorUserId = (req as any).user?.id ?? req.body?.userId;
-    const { repayAmount } = req.body || {};
+    const { repayAmount, userSecret: liquidatorSecret } = req.body || {};
     if (!borrowPositionId || !repayAmount || !liquidatorUserId) {
       return res.status(400).json({ message: 'Missing: borrowPositionId (param), repayAmount, userId (auth or body)' });
     }
-    const result = await lendingService.liquidate(borrowPositionId, String(repayAmount), String(liquidatorUserId));
+    if (!liquidatorSecret?.trim()) {
+      return res.status(400).json({ message: 'userSecret required to sign repay and receive collateral onchain' });
+    }
+    const result = await lendingService.liquidate(borrowPositionId, String(repayAmount), String(liquidatorUserId), liquidatorSecret);
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error('liquidate failed:', error);
@@ -157,14 +164,19 @@ export const getPrices = async (req: Request, res: Response) => {
   }
 };
 
-/** Get credit score for a user. */
+/** Get credit score for a user. Includes maxBorrowTermDays and hasHistory for term eligibility (98+ with history = max term). */
 export const getCreditScore = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user?.id ?? req.query.userId;
     if (!userId) return res.status(400).json({ message: 'userId required (query or auth)' });
-    const score = await creditScoreService.getScore(String(userId));
-    const canBorrow = await creditScoreService.canBorrow(String(userId));
-    return res.status(200).json({ score, canBorrow: canBorrow.allowed, reason: canBorrow.reason });
+    const data = await creditScoreService.getScoreWithTerms(String(userId));
+    return res.status(200).json({
+      score: data.score,
+      canBorrow: data.canBorrow,
+      reason: data.reason,
+      maxBorrowTermDays: data.maxBorrowTermDays,
+      hasHistory: data.hasHistory,
+    });
   } catch (error: any) {
     logger.error('getCreditScore failed:', error);
     return res.status(500).json({ message: 'Failed to get credit score' });

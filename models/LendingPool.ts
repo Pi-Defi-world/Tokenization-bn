@@ -28,7 +28,7 @@ const collateralConfigSchema = new Schema<ICollateralConfig>(
   {
     asset: {
       code: { type: String, required: true },
-      issuer: { type: String, required: true },
+      issuer: { type: String, required: false, default: '' },
     },
     collateralFactor: { type: String, required: true },
   },
@@ -39,7 +39,7 @@ const lendingPoolSchema = new Schema<ILendingPool>(
   {
     asset: {
       code: { type: String, required: true },
-      issuer: { type: String, required: true },
+      issuer: { type: String, required: false, default: '' },
     },
     totalSupply: { type: String, default: '0' },
     totalBorrow: { type: String, default: '0' },

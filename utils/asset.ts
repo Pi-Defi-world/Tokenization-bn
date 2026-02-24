@@ -1,6 +1,25 @@
 
 import * as StellarSdk from "@stellar/stellar-sdk";
 
+export type HorizonServer = StellarSdk.Horizon.Server;
+
+/**
+ * Check if a credit asset exists on-chain (at least one account has a trustline).
+ * Native asset always returns true.
+ */
+export async function assetExistsOnChain(
+  server: HorizonServer,
+  asset: { code: string; issuer: string }
+): Promise<boolean> {
+  if (asset.code === "native" || !asset.issuer) return true;
+  try {
+    const stellarAsset = new StellarSdk.Asset(asset.code.trim(), asset.issuer.trim());
+    const page = await server.accounts().forAsset(stellarAsset).limit(1).call();
+    return page.records.length > 0;
+  } catch {
+    return false;
+  }
+}
 
 export function getAssetFromCodeIssuer(input: string | { code: string; issuer?: string }): StellarSdk.Asset {
   if (!input) throw new Error("asset required");

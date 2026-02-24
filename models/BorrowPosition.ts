@@ -14,6 +14,8 @@ export interface IBorrowPosition extends Document {
   accruedInterest: string;
   healthFactor: string;
   liquidatedAt: Date | null;
+  /** Set when loan is fully repaid; used for credit score (repaid bonus). */
+  repaidAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -38,6 +40,7 @@ const borrowPositionSchema = new Schema<IBorrowPosition>(
     accruedInterest: { type: String, default: '0' },
     healthFactor: { type: String },
     liquidatedAt: { type: Date, default: null },
+    repaidAt: { type: Date },
   },
   { timestamps: true }
 );

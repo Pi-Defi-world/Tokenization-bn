@@ -3,6 +3,7 @@ import { swapService } from '../../services/swap.service';
 import { logger } from '../../utils/logger';
 import { PoolService } from '../../services/liquidity-pools.service';
 import { ensureTgeOpenForPool } from '../../middlewares/launchpad-guard';
+import { errorBody, errorBodyFrom } from '../../utils/zyradex-error';
 
 const poolService = new PoolService();
 
@@ -11,13 +12,14 @@ export const swapToken = async (req: Request, res: Response) => {
     const { userSecret, from, to, sendAmount } = req.body;
 
     if (!userSecret || !from || !to || !sendAmount)
-      return res.status(400).json({ success: false, message: 'Missing parameters' });
+      return res.status(400).json(errorBody('Please provide all swap details and try again.'));
 
     const result = await swapService.swapToken(userSecret, from, to, sendAmount);
     res.status(200).json(result);
   } catch (err: any) {
     logger.error('❌ swapToken failed:', err);
-    res.status(500).json({ success: false, error: err.message });
+    const status = err?.status ?? err?.response?.status ?? 500;
+    return res.status(status).json(errorBodyFrom(err));
   }
 };
 
@@ -26,12 +28,10 @@ export const quoteSwap = async (req: Request, res: Response) => {
     const { poolId, from, to, amount, slippagePercent = 1, publicKey } = req.query;
 
     if (!poolId || !from || !to || !amount)
-      return res.status(400).json({ success: false, message: 'Missing parameters' });
+      return res.status(400).json(errorBody('Please select a pool and both tokens to get a quote.'));
 
     const tgeError = await ensureTgeOpenForPool(poolId as string);
-    if (tgeError) {
-      return res.status(403).json({ success: false, error: tgeError });
-    }
+    if (tgeError) return res.status(403).json(errorBody(tgeError));
 
     // Parse from/to - can be string "native" or "CODE:ISSUER" or object
     let fromAsset: { code: string; issuer?: string };
@@ -44,10 +44,10 @@ export const quoteSwap = async (req: Request, res: Response) => {
         const [code, issuer] = from.split(':');
         fromAsset = { code, issuer };
       } else {
-        return res.status(400).json({ success: false, message: 'Invalid from format. Use "native" or "CODE:ISSUER"' });
+        return res.status(400).json(errorBody('Please choose a valid token to swap from.'));
       }
     } else {
-      return res.status(400).json({ success: false, message: 'from must be a string' });
+      return res.status(400).json(errorBody('Please choose a valid token to swap from.'));
     }
 
     if (typeof to === 'string') {
@@ -57,10 +57,10 @@ export const quoteSwap = async (req: Request, res: Response) => {
         const [code, issuer] = to.split(':');
         toAsset = { code, issuer };
       } else {
-        return res.status(400).json({ success: false, message: 'Invalid to format. Use "native" or "CODE:ISSUER"' });
+        return res.status(400).json(errorBody('Please choose a valid token to receive.'));
       }
     } else {
-      return res.status(400).json({ success: false, message: 'to must be a string' });
+      return res.status(400).json(errorBody('Please choose a valid token to receive.'));
     }
 
     const result = await swapService.quoteSwap(
@@ -75,7 +75,8 @@ export const quoteSwap = async (req: Request, res: Response) => {
     return res.json(result);
   } catch (err: any) {
     logger.error(`❌ quoteSwap failed:`, err);
-    res.status(500).json({ success: false, error: err.message });
+    const status = err?.status ?? err?.response?.status ?? 500;
+    return res.status(status).json(errorBodyFrom(err));
   }
 };
 
@@ -83,21 +84,14 @@ export const executeSwap = async (req: Request, res: Response) => {
   try {
     const { userSecret, poolId, from, to, sendAmount, slippagePercent = 1 } = req.body;
 
-    if (!userSecret)
-      return res.status(400).json({ success: false, message: 'Missing userSecret' });
-    if (!poolId)
-      return res.status(400).json({ success: false, message: 'Missing poolId' });
-    if (!from)
-      return res.status(400).json({ success: false, message: 'Missing from' });
-    if (!to)
-      return res.status(400).json({ success: false, message: 'Missing to' });
-    if (!sendAmount)
-      return res.status(400).json({ success: false, message: 'Missing sendAmount' });
+    if (!userSecret) return res.status(400).json(errorBody('Please sign in with your wallet to swap.'));
+    if (!poolId) return res.status(400).json(errorBody('Please select a pool for this swap.'));
+    if (!from) return res.status(400).json(errorBody('Please choose the token you are sending.'));
+    if (!to) return res.status(400).json(errorBody('Please choose the token you want to receive.'));
+    if (!sendAmount) return res.status(400).json(errorBody('Please enter the amount to swap.'));
 
     const tgeError = await ensureTgeOpenForPool(poolId);
-    if (tgeError) {
-      return res.status(403).json({ success: false, error: tgeError });
-    }
+    if (tgeError) return res.status(403).json(errorBody(tgeError));
 
     // Convert from/to objects to strings if needed
     const fromStr = typeof from === 'string'
@@ -120,55 +114,8 @@ export const executeSwap = async (req: Request, res: Response) => {
     res.json({ success: true, data: result });
   } catch (err: any) {
     logger.error(`❌ executeSwap failed:`, err);
-    
-    // Extract detailed error information
-    let errorMessage = err?.message || err?.toString() || 'Unknown error';
-    let errorDetails: any = null;
-    
-    // Check for Horizon API error response
-    if (err?.response?.data) {
-      errorDetails = err.response.data;
-      
-      // Extract operation error codes if available
-      if (err.response.data.extras?.result_codes) {
-        const resultCodes = err.response.data.extras.result_codes;
-        const opError = resultCodes.operations?.[0];
-        const txError = resultCodes.transaction;
-        
-        // Use the detailed error message from swapWithPool if available
-        if (err.message && err.message !== 'Bad Request') {
-          errorMessage = err.message;
-        } else if (opError) {
-          errorMessage = `Transaction failed: ${opError}`;
-        } else if (txError) {
-          errorMessage = `Transaction failed: ${txError}`;
-        }
-      }
-      
-      // Check for other error details
-      if (err.response.data.detail) {
-        errorMessage = err.response.data.detail;
-      } else if (err.response.data.title) {
-        errorMessage = err.response.data.title;
-      }
-    }
-    
-    // Log full error details for debugging
-    logger.error(`Full error details:`, {
-      message: errorMessage,
-      response: err?.response?.data,
-      status: err?.response?.status || err?.status,
-      stack: err?.stack,
-    });
-    
-    // Return appropriate status code based on error type
-    const statusCode = err?.status === 400 || err?.response?.status === 400 ? 400 : 500;
-    return res.status(statusCode).json({ 
-      success: false, 
-      error: errorMessage,
-      details: errorDetails,
-      status: statusCode
-    });
+    const status = err?.status ?? err?.response?.status ?? 500;
+    return res.status(status).json(errorBodyFrom(err));
   }
 };
 
@@ -176,24 +123,23 @@ export const getPoolsForPair = async (req: Request, res: Response) => {
   try {
     const { tokenA, tokenB } = req.query;
     if (!tokenA || !tokenB)
-      return res.status(400).json({ success: false, message: 'Missing tokenA or tokenB' });
-
-    logger.info(`🔹 Fetching pools for ${tokenA}/${tokenB}`);
+      return res.status(400).json(errorBody('Please select both tokens to see available pools.'));
+    const norm = (s: string) => String(s ?? '').trim().replace(/^\/+|\/+$/g, '');
+    logger.info(`🔹 Fetching pools for ${norm(tokenA as string)}/${norm(tokenB as string)}`);
 
     const useCache = req.query.cache !== 'false';
     const result = await swapService.getPoolsForPair(tokenA as string, tokenB as string, 50, useCache);
     res.json(result);
   } catch (err: any) {
     logger.error('❌ getPoolsForPair failed:', err);
-    res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json(errorBodyFrom(err));
   }
 };
 
 export const distributeFees = async (req: Request, res: Response) => {
   try {
     const { poolId } = req.body;
-    if (!poolId)
-      return res.status(400).json({ success: false, message: 'Missing poolId' });
+    if (!poolId) return res.status(400).json(errorBody('Please select a pool.'));
 
     const pool = await poolService.getLiquidityPoolById(poolId);
     const [resA, resB] = pool.reserves;
@@ -210,6 +156,6 @@ export const distributeFees = async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     logger.error('❌ distributeFees failed:', err);
-    res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json(errorBodyFrom(err));
   }
 };
