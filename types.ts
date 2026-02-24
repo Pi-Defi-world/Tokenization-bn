@@ -1,4 +1,6 @@
-import { Document, ObjectId } from "mongoose";
+import { Document, Types } from "mongoose";
+
+type ObjectId = Types.ObjectId;
 
 export interface IAssetRecord {
   _links: {
@@ -61,7 +63,6 @@ export interface IToml extends Document {
 
 
 export interface IUser extends Document {
-  _id: ObjectId;
   id: string;
   uid: string;
   username: string;
