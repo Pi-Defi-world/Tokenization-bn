@@ -108,11 +108,12 @@ export const getMyPiPower = async (req: Request, res: Response) => {
 export const commitPi = async (req: Request, res: Response) => {
   try {
     const launchId = getLaunchIdParam(req);
-    const { committedPi, userId: bodyUserId } = req.body || {};
+    const { committedPi, userId: bodyUserId, userSecret } = req.body || {};
     const userId = (req as any).user?.uid ?? req.query.userId ?? bodyUserId;
     if (!userId) return res.status(400).json({ message: 'userId required (or authenticated user)' });
     if (!committedPi) return res.status(400).json({ message: 'committedPi is required' });
-    const { participation } = await stakingService.commitPi(launchId, String(userId), String(committedPi));
+    if (!userSecret) return res.status(400).json({ message: 'userSecret required to sign the commit transaction' });
+    const { participation } = await stakingService.commitPi(launchId, String(userId), String(committedPi), userSecret);
     return res.status(200).json({ participation });
   } catch (error: any) {
     logger.error('commitPi failed:', error);

@@ -632,30 +632,10 @@ export class PoolService {
   }
 
   public async getLiquidityPools(limit: number = 10, cursor?: string, useCache: boolean = true) {
-    // Cache key for all pools (without cursor for first page)
-    const cacheKey = cursor ? `all-pools-cursor:${cursor}` : 'all-pools';
+    // Do not cache the first page: caching under a single key without limit caused inconsistent
+    // pool counts and broken pagination (nextCursor was lost, so clients never saw hasMore).
+    // First page always from Horizon so limit/nextCursor/hasMore stay correct.
     const CACHE_TTL_MS = 300000; // 5 minutes
-
-    // Check cache first
-    if (useCache && !cursor) {
-      try {
-        const cached = await PoolCache.findOne({ 
-          cacheKey: 'all-pools',
-          expiresAt: { $gt: new Date() }
-        })
-        .select('pools expiresAt')
-        .lean();
-
-        if (cached) {
-          return {
-            records: cached.pools,
-            nextCursor: undefined // Don't paginate cached data
-          };
-        }
-      } catch (dbError) {
-        logger.warn(`Error reading from pool cache DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
-      }
-    }
 
     try {
       const serverUrl = (server as any).serverURL?.toString() || env.HORIZON_URL;
@@ -736,23 +716,7 @@ export class PoolService {
         // Ignore paging token extraction errors
       }
 
-      if (useCache && !cursor) {
-        try {
-          const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
-          await PoolCache.findOneAndUpdate(
-            { cacheKey: 'all-pools' },
-            {
-              cacheKey: 'all-pools',
-              pools: pools.records,
-              lastFetched: new Date(),
-              expiresAt,
-            },
-            { upsert: true, new: true }
-          );
-        } catch (dbError) {
-          logger.warn(`Failed to save pool cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
-        }
-      }
+      // First page not cached (see comment at top of method)
 
       // Filter out empty pools (pools with no liquidity)
       const nonEmptyPools = pools.records.filter((pool: any) => {
@@ -773,30 +737,11 @@ export class PoolService {
         );
       });
 
-      if (nonEmptyPools.length < pools.records.length) {
-      }
-
       return {
         records: nonEmptyPools,
         nextCursor
       };
     } catch (err: any) {
-      if (useCache && !cursor) {
-        try {
-          const cached = await PoolCache.findOne({ cacheKey: 'all-pools' })
-          .select('pools')
-          .lean();
-          if (cached && cached.pools.length > 0) {
-            logger.warn(`Pool fetch failed, returning cached pools. Error: ${err?.message || String(err)}`);
-            return {
-              records: cached.pools,
-              nextCursor: undefined
-            };
-          }
-        } catch (cacheError) {
-        }
-      }
-      
       logger.error('Error fetching liquidity pools:', err);
       throw err;
     }
@@ -1447,7 +1392,6 @@ export class PoolService {
       if (pairs.length === 0) {
         return [];
       }
-
 
       const platformPools = [];
       for (const pair of pairs) {

@@ -118,7 +118,7 @@ class SwapService {
 
     if (!account.balances || !Array.isArray(account.balances)) {
       logger.error(`Account object missing balances array for ${publicKey}`);
-      throw new Error(`Failed to load account balances. Cannot check trustline.`);
+      throw new Error(`We couldn't load your account balances. Please try again in a moment.`);
     }
 
     const assetCodeUpper = assetCode.toUpperCase();
@@ -223,7 +223,7 @@ class SwapService {
           );
         }
       } else {
-        throw new Error('No Test Pi balance found for platform fee');
+        throw new Error('Your account has no Test Pi balance. Add Test Pi to pay the platform fee.');
       }
       
       // Reload account right before building to ensure fresh sequence number
@@ -291,7 +291,7 @@ class SwapService {
       const pool = await poolService.getLiquidityPoolById(poolId);
 
       if (this.isPoolEmpty(pool)) {
-        throw new Error(`Pool ${poolId} is empty (has no liquidity). Cannot perform swap.`);
+        throw new Error(`This pool has no liquidity right now. Try another pool or add liquidity first.`);
       }
 
       const [resA, resB] = pool.reserves;
@@ -343,11 +343,11 @@ class SwapService {
             const baseFee = await server.fetchBaseFee();
             const feeInPi = baseFee / 10000000; // Convert stroops to Test Pi
             const minReserve = 1.0; // Minimum reserve requirement
-            const totalRequired = input + feeInPi + minReserve;
-            
+            const platformFeePi = env.PLATFORM_SWAP_FEE_AMOUNT ? parseFloat(env.PLATFORM_SWAP_FEE_AMOUNT) : 0;
+            const totalRequired = input + feeInPi + platformFeePi + minReserve;
             if (availableBalance < totalRequired) {
               isSufficient = false;
-              balanceError = `Insufficient balance. Available: ${availableBalance.toFixed(7)} ${from.code}, Required: ${input.toFixed(7)} + ${feeInPi.toFixed(7)} (fee) + ${minReserve.toFixed(7)} (reserve) = ${totalRequired.toFixed(7)}`;
+              balanceError = `You don't have enough Test Pi for this swap. Your balance: ${availableBalance.toFixed(7)}. You need: ${input.toFixed(7)} (swap) + ${feeInPi.toFixed(7)} (network fee) + ${platformFeePi.toFixed(7)} (platform fee) + ${minReserve.toFixed(7)} (reserve) = ${totalRequired.toFixed(7)}. Reduce the amount or add Test Pi.`;
             }
           }
         } catch (err: any) {
@@ -415,7 +415,7 @@ class SwapService {
       
       // Check if pool is empty
       if (this.isPoolEmpty(pool)) {
-        throw new Error(`Pool ${poolId} is empty (has no liquidity). Cannot perform swap.`);
+        throw new Error(`This pool has no liquidity right now. Try another pool or add liquidity first.`);
       }
       
       const [resA, resB] = pool.reserves;
@@ -451,13 +451,51 @@ class SwapService {
       let initialAccount = await this.loadAccountWithFallback(publicKey);
       const initialSequence = initialAccount.sequenceNumber ? initialAccount.sequenceNumber() : '0';
 
+      const input = parseFloat(sendAmount);
+      // Validate user has enough balance before proceeding (avoids vague op_underfunded from network)
+      const fromBalance = initialAccount.balances?.find((b: any) =>
+        actualFromCode === 'native'
+          ? b.asset_type === 'native'
+          : b.asset_code === actualFromCode && b.asset_issuer === actualFromIssuer
+      );
+      const available = fromBalance ? parseFloat(fromBalance.balance) : 0;
+      let baseFeePi = 0.01;
+      try {
+        baseFeePi = (await server.fetchBaseFee()) / 10000000;
+      } catch (_) { /* use default */ }
+      const platformFeePi = env.PLATFORM_SWAP_FEE_AMOUNT ? parseFloat(env.PLATFORM_SWAP_FEE_AMOUNT) : 0;
+      const minReserve = 1.0;
+      const required = actualFromCode === 'native'
+        ? input + baseFeePi + platformFeePi + minReserve
+        : input + baseFeePi + minReserve; // non-native: still need native for tx fee + reserve
+      if (available < input) {
+        const assetName = actualFromCode === 'native' ? 'Test Pi' : actualFromCode;
+        throw new Error(
+          `Insufficient balance: you are trying to send ${input.toFixed(7)} ${assetName} but your available balance is ${available.toFixed(7)} ${assetName}. Reduce the amount or add more ${assetName} to your account.`
+        );
+      }
+      if (actualFromCode === 'native' && available < required) {
+        throw new Error(
+          `Insufficient balance: your Test Pi balance is ${available.toFixed(7)}. For this swap you need: ${input.toFixed(7)} (swap) + ${baseFeePi.toFixed(7)} (network fee) + ${platformFeePi.toFixed(7)} (platform fee) + ${minReserve.toFixed(7)} (account reserve) = ${required.toFixed(7)}. Add more Test Pi or reduce the amount.`
+        );
+      }
+      if (actualFromCode !== 'native') {
+        const nativeBal = initialAccount.balances?.find((b: any) => b.asset_type === 'native');
+        const nativeAvailable = nativeBal ? parseFloat(nativeBal.balance) : 0;
+        const nativeRequired = baseFeePi + minReserve;
+        if (nativeAvailable < nativeRequired) {
+          throw new Error(
+            `Insufficient Test Pi for fees: you need ${nativeRequired.toFixed(7)} Test Pi for the network fee and account reserve, but your Test Pi balance is ${nativeAvailable.toFixed(7)}. Add Test Pi to your account to complete this swap.`
+          );
+        }
+      }
+
       if (actualToCode !== 'native') {
         await this.ensureTrustline(userSecret, actualToCode, actualToIssuer);
         await new Promise(resolve => setTimeout(resolve, 2000));  
       }
 
       // Get fixed platform fee amount (will be collected AFTER successful swap)
-      const input = parseFloat(sendAmount);
       const swapFeeAmount = env.PLATFORM_SWAP_FEE_AMOUNT ? parseFloat(env.PLATFORM_SWAP_FEE_AMOUNT).toFixed(7) : '0';
 
       const fee = pool.fee_bp / 10000;
@@ -610,7 +648,7 @@ class SwapService {
               }
               
               logger.error(`  Failed to load account after ${maxRetries} SDK retries and all HTTP fallbacks`);
-              throw new Error(`Failed to load account. The Horizon API may be experiencing delays. Please wait a few seconds and try again.`);
+              throw new Error(`We couldn't load your account (network may be busy). Wait a few seconds and try again.`);
             }
             
             logger.warn(`SDK account load failed (attempt ${retries}/${maxRetries}): ${sdkError?.message || String(sdkError)}`);
@@ -621,7 +659,7 @@ class SwapService {
       // Validate finalAccount exists and has sequence
       if (!finalAccount || !finalAccount.sequenceNumber) {
         logger.error(`❌ Invalid account object after reload: missing sequence number`);
-        throw new Error(`Failed to load valid account object. Please try again.`);
+        throw new Error(`We couldn't load your account. Please try again.`);
       }
       
       const finalSequence = finalAccount.sequenceNumber();
@@ -776,13 +814,30 @@ class SwapService {
             const txError = resultCodes.transaction;
             
             if (opError) {
-              // Map operation errors to user-friendly messages
+              // Map operation errors to user-friendly messages with concrete numbers when possible
               if (opError === 'op_no_trust') {
                 detailedMessage = 'Trustline not found. You need to establish a trustline for this asset before swapping.';
               } else if (opError === 'op_underfunded') {
-                detailedMessage = `Insufficient balance. You do not have enough ${actualFromCode === 'native' ? 'Test Pi' : actualFromCode} to complete this swap.`;
+                const assetName = actualFromCode === 'native' ? 'Test Pi' : actualFromCode;
+                try {
+                  const acc = await this.loadAccountWithFallback(publicKey);
+                  const bal = acc.balances?.find((b: any) =>
+                    actualFromCode === 'native' ? b.asset_type === 'native' : (b.asset_code === actualFromCode && b.asset_issuer === actualFromIssuer)
+                  );
+                  const available = bal ? parseFloat(bal.balance) : 0;
+                  detailedMessage = `Insufficient balance: you tried to send ${sendAmount} ${assetName}, but your current balance is ${available.toFixed(7)} ${assetName}. Reduce the amount or add more ${assetName} to your account.`;
+                } catch (_) {
+                  detailedMessage = `Insufficient balance: you do not have enough ${assetName} to complete this swap. Reduce the amount or add more ${assetName} to your account.`;
+                }
               } else if (opError === 'op_low_reserve') {
-                detailedMessage = 'Insufficient reserve. Your account needs more Test Pi to maintain the minimum reserve.';
+                try {
+                  const acc = await this.loadAccountWithFallback(publicKey);
+                  const nativeBal = acc.balances?.find((b: any) => b.asset_type === 'native');
+                  const available = nativeBal ? parseFloat(nativeBal.balance) : 0;
+                  detailedMessage = `Insufficient reserve: your account must keep at least 1 Test Pi as reserve. Your current Test Pi balance is ${available.toFixed(7)}; after this swap you would go below the reserve. Add more Test Pi to your account before swapping.`;
+                } catch (_) {
+                  detailedMessage = 'Insufficient reserve: your account must keep at least 1 Test Pi as reserve. Add more Test Pi to your account and try again.';
+                }
               } else if (opError === 'op_line_full') {
                 detailedMessage = 'Trustline limit reached. You have reached the maximum balance for this asset.';
               } else if (opError === 'op_path_payment_strict_send_no_destination') {
@@ -792,7 +847,7 @@ class SwapService {
               } else if (opError === 'op_path_payment_strict_send_offer_cross_self') {
                 detailedMessage = 'Invalid swap path. The swap path crosses with your own offer.';
               } else {
-                detailedMessage = `Transaction failed: ${opError}. Please check your balance and account status.`;
+                detailedMessage = `Transaction failed (${opError}). Check your balance and try again, or contact support if the problem continues.`;
               }
             } else if (txError) {
               detailedMessage = `Transaction failed: ${txError}`;
@@ -905,18 +960,19 @@ class SwapService {
       }
       
       if (is400Error && errorData) {
+        // Prefer the detailed message from inner catch (e.g. balance numbers); only use short mapping if missing
+        const alreadyDetailed = err?.message && (err.message.length > 100 || /balance is|your current|Required:|available/i.test(err.message));
+        let errorMessage = alreadyDetailed ? err.message : (err?.message || errorData?.detail || errorData?.title || errorData?.message || 'Transaction failed');
 
-        let errorMessage = err?.message || errorData?.detail || errorData?.title || errorData?.message || 'Transaction failed';
-        
-        if (transactionResultCode === 'tx_failed') {
+        if (!alreadyDetailed && transactionResultCode === 'tx_failed') {
           if (operationsResultCodes.length > 0) {
             const opError = operationsResultCodes[0];
             if (opError === 'op_no_trust') {
               errorMessage = 'Trustline not found. You need to establish a trustline for this asset before swapping.';
             } else if (opError === 'op_underfunded') {
-              errorMessage = `Insufficient balance. You do not have enough ${fromCode === 'native' ? 'Test Pi' : fromCode} to complete this swap.`;
+              errorMessage = `Insufficient balance: you do not have enough ${fromCode === 'native' ? 'Test Pi' : fromCode} to complete this swap. Reduce the amount or add more to your account.`;
             } else if (opError === 'op_low_reserve') {
-              errorMessage = 'Insufficient reserve. Your account needs more Test Pi to maintain the minimum reserve.';
+              errorMessage = 'Insufficient reserve: your account must keep at least 1 Test Pi as reserve. Add more Test Pi and try again.';
             } else if (opError === 'op_line_full') {
               errorMessage = 'Trustline limit reached. You have reached the maximum balance for this asset.';
             } else if (opError === 'op_path_payment_strict_send_no_destination') {
@@ -926,12 +982,12 @@ class SwapService {
             } else if (opError === 'op_path_payment_strict_send_offer_cross_self') {
               errorMessage = 'Invalid swap path. The swap path crosses with your own offer.';
             } else {
-              errorMessage = `Transaction failed: ${opError}. Please check your balance and account status.`;
+              errorMessage = `Transaction failed (${opError}). Check your balance and try again.`;
             }
           } else {
-            errorMessage = errorMessage || 'Transaction failed. Please check your balance and account status.';
+            errorMessage = errorMessage || 'Transaction failed. Check your balance and try again.';
           }
-        } else if (transactionResultCode !== 'unknown') {
+        } else if (!alreadyDetailed && transactionResultCode !== 'unknown') {
           errorMessage = `Transaction failed: ${transactionResultCode}`;
         }
 
@@ -1005,7 +1061,16 @@ class SwapService {
   }
 
   public async getPoolsForPair(tokenA: string, tokenB: string, limit: number = 50, useCache: boolean = true) {
-    const cacheKey = `pair:${tokenA.toUpperCase()}:${tokenB.toUpperCase()}`;
+    // Normalize: trim, strip leading/trailing slashes, then code-only so "CODE:ISSUER" and "/CODE" match pool reserves
+    const norm = (s: string) => (s || '').trim().replace(/^\/+|\/+$/g, '');
+    const toCode = (s: string) => {
+      const t = norm(s);
+      if (t === 'native') return 'native';
+      return t.includes(':') ? t.split(':')[0].toUpperCase() : t.toUpperCase();
+    };
+    const tokenAUpper = toCode(tokenA);
+    const tokenBUpper = toCode(tokenB);
+    const cacheKey = `pair:${tokenAUpper}:${tokenBUpper}`;
     const CACHE_TTL_MS = 300000; // 5 minutes
 
     if (useCache) {
@@ -1020,9 +1085,10 @@ class SwapService {
         if (cached) {
           // Filter out empty pools from cache
           const nonEmptyPools = (cached.pools || []).filter((pool: any) => !this.isPoolEmpty(pool));
-          if (nonEmptyPools.length < cached.pools.length) {
+          // Only use cache when we have pools; empty cache may be stale (e.g. from before pagination fix)
+          if (nonEmptyPools.length > 0) {
+            return { success: true, pools: nonEmptyPools };
           }
-          return { success: true, pools: nonEmptyPools };
         }
       } catch (dbError) {
         logger.warn(`Error reading from pool cache DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
@@ -1030,21 +1096,17 @@ class SwapService {
     }
 
     try {
-      // Normalize token codes for comparison
-      const tokenAUpper = tokenA === "native" ? "native" : tokenA.toUpperCase();
-      const tokenBUpper = tokenB === "native" ? "native" : tokenB.toUpperCase();
-      
       const matchedPools: any[] = [];
       const seenPoolIds = new Set<string>();
       
       // First, check Pair model for registered pairs and fetch their pools
       const allPairs = await Pair.find({}).lean();
       
-      // Case-insensitive matching for registered pairs
+      // Case-insensitive matching for registered pairs (normalize pair tokens same way)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const registeredPairs = allPairs.filter((pair: any) => {
-        const baseUpper = String(pair.baseToken || '').toUpperCase();
-        const quoteUpper = String(pair.quoteToken || '').toUpperCase();
+        const baseUpper = toCode(String(pair.baseToken || ''));
+        const quoteUpper = toCode(String(pair.quoteToken || ''));
         return (
           (baseUpper === tokenAUpper && quoteUpper === tokenBUpper) ||
           (baseUpper === tokenBUpper && quoteUpper === tokenAUpper)
@@ -1090,7 +1152,9 @@ class SwapService {
 
       while (hasMore) {
         try {
-          const result = await poolService.getLiquidityPools(limit, cursor, useCache);
+          // Use cache only for first page; pagination must hit Horizon for each page to get all pools
+          const paginationUseCache = !cursor;
+          const result = await poolService.getLiquidityPools(limit, cursor, paginationUseCache);
           consecutiveErrors = 0; // Reset error counter on success
         totalFetched += result.records.length;
 
@@ -1112,52 +1176,15 @@ class SwapService {
             }
         }
 
-
-          // Validate nextCursor before using it - must be a valid paging token, not a pool ID
+          // Horizon uses pool ID (64-char hex) as cursor for liquidity_pools; use it as-is.
+          // If Horizon returns nextCursor, there are more pages (even if this page has fewer than limit).
           const nextCursor = result.nextCursor;
           if (nextCursor) {
-            // Validate it's not a hex hash (pool ID) - paging tokens are base64 encoded
-            const isHexHash = /^[0-9a-f]{64}$/i.test(nextCursor);
-            if (isHexHash) {
-              cursor = undefined;
-              hasMore = false;
-            } else {
-              cursor = nextCursor;
-              hasMore = result.records.length > 0;
-            }
+            cursor = nextCursor;
+            hasMore = true;
           } else {
             cursor = undefined;
             hasMore = false;
-          }
-
-          // Filter out empty pools from matched pools
-          const nonEmptyMatchedPools = matchedPools.filter((pool: any) => !this.isPoolEmpty(pool));
-          
-          if (nonEmptyMatchedPools.length > 0) {
-            if (nonEmptyMatchedPools.length < matchedPools.length) {
-            }
-            logger.success(`✅ Found ${nonEmptyMatchedPools.length} pools containing ${tokenA}/${tokenB}`);
-            
-            if (useCache) {
-              try {
-                const PoolCache = require('../models/PoolCache').default;
-                const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
-                await PoolCache.findOneAndUpdate(
-                  { cacheKey },
-                  {
-                    cacheKey,
-                    pools: nonEmptyMatchedPools,
-                    lastFetched: new Date(),
-                    expiresAt,
-                  },
-                  { upsert: true, new: true }
-                );
-              } catch (dbError) {
-                logger.warn(`Failed to save pair cache to DB: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
-              }
-            }
-            
-            return { success: true, pools: nonEmptyMatchedPools };
           }
         } catch (poolError: any) {
           consecutiveErrors++;
@@ -1230,7 +1257,7 @@ class SwapService {
         if (matchedPools.length > 0) {
         const nonEmptyMatchedPools = matchedPools.filter((pool: any) => !this.isPoolEmpty(pool));
         if (nonEmptyMatchedPools.length > 0) {
-          logger.success(`✅ Found ${nonEmptyMatchedPools.length} pools containing ${tokenA}/${tokenB} (despite errors)`);
+          logger.success(`✅ Found ${nonEmptyMatchedPools.length} pools for ${tokenAUpper}/${tokenBUpper}`);
           if (useCache) {
             try {
               const PoolCache = require('../models/PoolCache').default;
@@ -1256,30 +1283,13 @@ class SwapService {
       // Only log warning if we actually scanned a significant number of pools
       // This reduces log noise for expected "no pools found" scenarios
       if (totalFetched >= 20) {
-        logger.warn(`⚠️ No pools found for ${tokenA}/${tokenB} after scanning ${totalFetched} pools`);
+        logger.warn(`⚠️ No pools found for ${tokenAUpper}/${tokenBUpper} after scanning ${totalFetched} pools`);
       } else {
-        logger.info(`ℹ️ No pools found for ${tokenA}/${tokenB} (scanned ${totalFetched} pools)`);
+        logger.info(`ℹ️ No pools found for ${tokenAUpper}/${tokenBUpper} (scanned ${totalFetched} pools)`);
       }
       
-      if (useCache) {
-        try {
-          const PoolCache = require('../models/PoolCache').default;
-          // Cache "not found" results for 5 minutes to reduce repeated scans
-          const expiresAt = new Date(Date.now() + 300000); // 5 minutes for "not found"
-          await PoolCache.findOneAndUpdate(
-            { cacheKey },
-            {
-              cacheKey,
-              pools: [],
-              lastFetched: new Date(),
-              expiresAt,
-            },
-            { upsert: true, new: true }
-          );
-        } catch (dbError) { 
-        }
-      }
-      
+      // Do not cache empty results: a previously cached "no pools" would block finding
+      // pools after fixes (e.g. pagination or token normalization) until cache expires.
       return { success: true, pools: [] };
     } catch (err: any) {
       if (useCache) {
@@ -1370,7 +1380,7 @@ class SwapService {
         return assetsUpper.includes(fromCodeUpper) && assetsUpper.includes(toCodeUpper);
       });
 
-      if (!match) throw new Error(`No pool found for ${from.code}/${to.code}`);
+      if (!match) throw new Error(`No liquidity pool found for ${from.code} and ${to.code}. Create a pool for this pair first.`);
 
       const pool = await poolService.getLiquidityPoolById(match.id);
       const [resA, resB] = pool.reserves;

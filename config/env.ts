@@ -1,6 +1,20 @@
 import dotenv from 'dotenv';
+import * as StellarSdk from '@stellar/stellar-sdk';
 
 dotenv.config();
+
+/** Derive platform custody public key from PLATFORM_ISSUER_SECRET so no extra env vars are needed. */
+function getPlatformCustodyPublicKey(): string {
+  const secret = process.env.PLATFORM_ISSUER_SECRET as string;
+  if (!secret?.trim()) return '';
+  try {
+    return StellarSdk.Keypair.fromSecret(secret).publicKey();
+  } catch {
+    return '';
+  }
+}
+
+const derivedPlatformPublicKey = getPlatformCustodyPublicKey();
 
 const env = {
     HORIZON_URL: process.env.HORIZON_URL as string || 'https://api.testnet.minepi.com',
@@ -39,8 +53,14 @@ const env = {
     BORROW_RATE_BIG_BUSINESS_YEARLY: parseFloat(process.env.BORROW_RATE_BIG_BUSINESS_YEARLY as string) || 12,
     /** Max borrow amount (in borrowed asset units) to be classified as "small". Above = big business. */
     BORROW_THRESHOLD_SMALL_MAX: process.env.BORROW_THRESHOLD_SMALL_MAX as string || '10000',
-    /** All platform fees (0.6% on payouts, lending, etc.) are sent to this Stellar public key. */
-    PLATFORM_FEE_PUBLIC_KEY: process.env.PLATFORM_FEE_PUBLIC_KEY as string || '',
+    /** All platform fees (0.6% on payouts, lending, etc.) are sent to this Stellar public key. Derived from PLATFORM_ISSUER_SECRET if unset. */
+    PLATFORM_FEE_PUBLIC_KEY: (process.env.PLATFORM_FEE_PUBLIC_KEY as string)?.trim() || derivedPlatformPublicKey,
+    /** Platform custody/commit destination (savings, lending, launch commit). Derived from PLATFORM_ISSUER_SECRET. */
+    PLATFORM_CUSTODY_PUBLIC_KEY: derivedPlatformPublicKey,
+    /** Base rate (e.g. savings floor) in % for indices. Used by getIndex('baseRate'). */
+    SAVINGS_BASE_RATE: parseFloat(process.env.SAVINGS_BASE_RATE as string) || parseFloat(process.env.BASE_RATE as string) || 2,
+    /** Reserve buffer ratio (0–1) for lending: available = totalSupply - totalBorrow - (totalSupply * ratio). E.g. 0.05 = 5%. */
+    RESERVE_BUFFER_RATIO: parseFloat(process.env.RESERVE_BUFFER_RATIO as string) || 0,
 }
 
 export default env;
